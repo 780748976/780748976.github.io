@@ -1,0 +1,18 @@
+menu:
+  首页: /
+  归档: /archives/
+
+social:
+  GitHub: https://github.com/780748976
+
+featured_tags:
+  - 放课后
+  - 音乐
+  - 日常
+  - 前端
+
+profile:
+  name: YUK1
+  role: Guitar & Code
+  bio: 在代码、音乐和下午茶之间，记录那些值得反复播放的日常。
+

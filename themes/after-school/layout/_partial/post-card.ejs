@@ -1,0 +1,17 @@
+<article class="post-card">
+  <a class="post-card-link" href="<%- url_for(post.path) %>">
+    <div class="post-card-top">
+      <span class="post-number">TRACK <%= String(index + 1).padStart(2, '0') %></span>
+      <span class="post-date"><%= date(post.date, 'YYYY.MM.DD') %></span>
+    </div>
+    <h2><%= post.title %></h2>
+    <p><%= strip_html(post.excerpt || post.content).replace(/\s+/g, ' ').slice(0, 118) || '一段还没有写下摘要的日常。' %></p>
+    <div class="post-card-bottom">
+      <div class="tag-row">
+        <% post.tags.toArray().slice(0, 3).forEach(function(tag) { %><span>#<%= tag.name %></span><% }) %>
+      </div>
+      <span class="read-more">继续阅读 <b>→</b></span>
+    </div>
+  </a>
+</article>
+

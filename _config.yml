@@ -3,10 +3,10 @@
 ## Source: https://github.com/hexojs/hexo/
 
 # Site
-title: "YUK1's blog"
-subtitle: ''
-description: ''
-keywords:
+title: "YUK1's 放课后日志"
+subtitle: '代码、音乐与下午茶'
+description: '在代码、音乐和下午茶之间，记录那些值得反复播放的日常。'
+keywords: 博客, 前端, 音乐, 二次元, 轻音
 author: YUK1
 language: zh-CN
 timezone: Asia/Shanghai
@@ -97,7 +97,7 @@ ignore:
 # Extensions
 ## Plugins: https://hexo.io/plugins/
 ## Themes: https://hexo.io/themes/
-theme: landscape
+theme: after-school
 
 # Deployment
 ## Docs: https://hexo.io/docs/one-command-deployment

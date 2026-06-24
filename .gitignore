@@ -3,3 +3,4 @@ public/
 .deploy*/
 *.log
 .DS_Store
+.env

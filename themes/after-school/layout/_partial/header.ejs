@@ -1,0 +1,18 @@
+<header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="<%- url_for('/') %>" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      <% Object.keys(theme.menu || {}).forEach(function(name) { %>
+        <a href="<%- url_for(theme.menu[name]) %>"><%= name %></a>
+      <% }) %>
+      <a href="<%- url_for('/about/') %>">关于</a>
+    </nav>
+  </div>
+</header>
+

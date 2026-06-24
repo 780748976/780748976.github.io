@@ -1,0 +1,5 @@
+<div class="page-shell archive-page">
+  <header class="archive-header"><p>ALL TRACKS</p><h1>日志归档</h1><span>共 <%= site.posts.length %> 篇记录</span></header>
+  <div class="archive-list"><% page.posts.each(function(post) { %><a href="<%- url_for(post.path) %>"><time><%= date(post.date, 'YYYY.MM.DD') %></time><strong><%= post.title %></strong><span>→</span></a><% }) %></div>
+</div>
+

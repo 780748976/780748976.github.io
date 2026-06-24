@@ -1,0 +1,44 @@
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow"><span></span> AFTER SCHOOL NOTES</p>
+    <h1>把青春，<br><em>调成喜欢的音色。</em></h1>
+    <p class="hero-lead"><%= config.description %></p>
+    <a class="primary-action" href="#latest">开始阅读 <span>↓</span></a>
+  </div>
+  <div class="hero-scene" aria-label="轻音少女五人壁纸">
+    <img src="<%- url_for('/images/k-on-club-wallpaper.webp') %>" alt="轻音少女五位成员的剪影壁纸">
+    <div class="wallpaper-label">
+      <span>NOW PLAYING</span>
+      <strong>放課後ティータイム</strong>
+    </div>
+  </div>
+</section>
+
+<section class="content-band" id="latest">
+  <div class="section-heading">
+    <div><p>RECENT TRACKS</p><h2>最新日志</h2></div>
+    <a href="<%- url_for('/archives/') %>">查看全部 <span>→</span></a>
+  </div>
+  <div class="home-grid">
+    <div class="post-list">
+      <% page.posts.each(function(post, index) { %><%- partial('_partial/post-card', { post: post, index: index }) %><% }) %>
+      <% if (!page.posts.length) { %><p class="empty-state">活动室还很安静，第一篇日志正在路上。</p><% } %>
+    </div>
+    <aside class="sidebar">
+      <section class="profile">
+        <div class="avatar"><span>Y</span><i>♪</i></div>
+        <p class="mini-label">CLUB MEMBER</p>
+        <h3><%= theme.profile.name %></h3>
+        <p class="profile-role"><%= theme.profile.role %></p>
+        <p><%= theme.profile.bio %></p>
+        <% if (theme.social && theme.social.GitHub) { %><a href="<%= theme.social.GitHub %>" target="_blank" rel="noopener">GitHub ↗</a><% } %>
+      </section>
+      <section class="tag-box">
+        <p class="mini-label">FAVORITE TAGS</p>
+        <h3>常用标签</h3>
+        <div class="tag-cloud"><% (theme.featured_tags || []).forEach(function(tag) { %><span># <%= tag %></span><% }) %></div>
+      </section>
+      <blockquote>“没有什么事情是<br>一块蛋糕解决不了的。”<small>— 放课后茶会守则</small></blockquote>
+    </aside>
+  </div>
+</section>

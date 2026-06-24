@@ -1,0 +1,42 @@
+<section class="about-hero">
+  <img src="<%- url_for('/images/k-on-club-wallpaper.webp') %>" alt="轻音少女五位成员的剪影壁纸">
+  <div class="about-hero-shade"></div>
+  <div class="about-hero-copy">
+    <p>PROFILE / AFTER SCHOOL</p>
+    <h1>你好，我是<br><span>YUK1。</span></h1>
+    <p class="about-intro">在代码、音乐和下午茶之间，记录值得反复播放的日常。</p>
+  </div>
+  <div class="about-track"><span>01</span><strong>わたしのこと</strong><small>3:24</small></div>
+</section>
+
+<section class="about-main">
+  <div class="about-story">
+    <p class="about-kicker">HELLO, WORLD!</p>
+    <h2>把喜欢的事情，<br>认真地做下去。</h2>
+    <div class="about-copy"><%- page.content %></div>
+    <a class="about-github" href="<%= theme.social.GitHub %>" target="_blank" rel="noopener">
+      <span>在 GitHub 找到我</span><b>↗</b>
+    </a>
+  </div>
+
+  <aside class="member-sheet">
+    <div class="member-top"><span>LIGHT MUSIC CLUB</span><b>部員証</b></div>
+    <div class="member-avatar"><span>Y</span><i>♪</i></div>
+    <dl>
+      <div><dt>NAME</dt><dd>YUK1</dd></div>
+      <div><dt>PART</dt><dd>Guitar & Code</dd></div>
+      <div><dt>CLUB</dt><dd>放课后日志</dd></div>
+      <div><dt>STATUS</dt><dd><span class="status-dot"></span> Coding</dd></div>
+    </dl>
+    <div class="member-sign">YUK1 <span>2026</span></div>
+  </aside>
+</section>
+
+<section class="about-interests">
+  <div class="about-section-title"><p>MY PLAYLIST</p><h2>正在投入的事情</h2></div>
+  <div class="interest-grid">
+    <article><span>01</span><b>⌘</b><h3>前端开发</h3><p>关注结构、交互和细节，把复杂问题做成清晰好用的界面。</p></article>
+    <article><span>02</span><b>AI</b><h3>AI 学习</h3><p>持续探索 RAG、智能体和大模型应用，记录真正弄懂的部分。</p></article>
+    <article><span>03</span><b>♪</b><h3>音乐与日常</h3><p>收集好听的旋律，也为普通生活保留一些值得记住的小事。</p></article>
+  </div>
+</section>

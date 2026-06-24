@@ -1,0 +1,19 @@
+<%
+  // 文章头图壁纸：front-matter 可用 wallpaper: 1/2/3 指定，缺省默认 1
+  var wallpaperNum = ['1', '2', '3'].indexOf(String(page.wallpaper)) !== -1 ? page.wallpaper : 1;
+%>
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-<%= wallpaperNum %>">
+      <a class="back-link" href="<%- url_for('/') %>">← 返回日志</a>
+      <img src="<%- url_for('/images/article-hero-' + wallpaperNum + '.jpg') %>" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> <%= date(page.date, 'YYYY.MM.DD') %> · AFTER SCHOOL NOTES</p>
+        <h1><%= page.title %></h1>
+        <div class="tag-row article-tags"><% page.tags.toArray().forEach(function(tag) { %><span>#<%= tag.name %></span><% }) %></div>
+      </div>
+    </div>
+    <div class="article-content"><%- page.content %></div>
+  </article>
+</div>
