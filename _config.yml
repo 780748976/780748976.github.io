@@ -90,6 +90,7 @@ pagination_dir: page
 # Include / Exclude file(s)
 ## include:/exclude: options only apply to the 'source/' folder
 include:
+  - .nojekyll
 exclude:
 ignore:
 
@@ -104,3 +105,4 @@ deploy:
   type: git
   repo: git@github.com:780748976/780748976.github.io.git
   branch: main
+  ignore_hidden: false
