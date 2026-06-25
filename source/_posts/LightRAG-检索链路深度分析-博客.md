@@ -3,8 +3,6 @@ title: LightRAG 四条检索链路：local / global / hybrid / mix 一次讲透
 date: 2026-06-24 23:14:00
 ---
 
-# LightRAG 四条检索链路：local / global / hybrid / mix 一次讲透
-
 > 假设你已经知道 LightRAG 在做"图增强的 RAG"，本文只聚焦检索链路本身：四种模式怎么走、token 怎么砍、多路结果怎么合并排序、rerank 在哪一步起作用。
 >
 > 阅读前置：知道有"实体""关系""chunk"三种东西就够了——实体是图里的节点（如 `LightRAG`），关系是图里的边（如 `LightRAG → GraphRAG`），chunk 是文档切片原文。
@@ -482,7 +480,7 @@ doc2.pdf 被 1 个 chunk 引用 → reference_id = 2
 
 `kg_query_context` 模板把三块知识装进结构化 JSON：
 
-```
+````text
 ---Knowledge Graph Data (Entity)---
 ```json
 {"entity": "LightRAG", "type": "框架", "description": "...", "created_at": "..."}
@@ -498,7 +496,7 @@ doc2.pdf 被 1 个 chunk 引用 → reference_id = 2
 ---Reference Document List---
 [1] doc1.pdf
 [2] doc2.pdf
-```
+````
 
 **为什么用 JSON 而非自然语言？** 结构化 JSON 让 LLM 精确解析每个字段，`reference_id` 让它给可追溯出处，`content_headings` 帮它理解 chunk 在原文的位置。检索结果以机器可读结构交付、由 LLM 消化成自然语言。
 

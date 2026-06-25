@@ -123,9 +123,16 @@ button { font: inherit; }
 .article-content pre::-webkit-scrollbar { height: 8px; }.article-content pre::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(255,255,255,.25); }
 .article-content li { margin: 8px 0; }.article-content li::marker { color: var(--pink-dark); }
 .article-content table { width: 100%; margin: 28px 0; border-collapse: collapse; font-size: 14px; }.article-content th, .article-content td { padding: 10px 14px; border: 1px solid var(--line); }.article-content th { background: #fdf1ea; color: var(--red); font-weight: 600; }
+.article-content > table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .article-content hr { width: 56px; margin: 44px auto; border: 0; border-top: 3px dotted var(--pink); }
 .article-content strong { color: var(--red); font-weight: 600; }
-.article-content .highlight, .article-content figure.highlight { border-radius: 12px; }
+.article-content figure.highlight { max-width: 100%; overflow-x: auto; margin: 30px 0; border-radius: 12px; background: #40393a; -webkit-overflow-scrolling: touch; }
+.article-content figure.highlight table { width: max-content; min-width: 100%; margin: 0; border-collapse: collapse; }
+.article-content figure.highlight td { padding: 0; border: 0; }
+.article-content figure.highlight pre { overflow: visible; margin: 0; border-radius: 0; }
+.article-content figure.highlight .gutter pre { padding: 20px 14px; background: rgba(255,255,255,.06); color: rgba(249,238,231,.55); text-align: right; user-select: none; }
+.article-content figure.highlight .code pre { padding: 20px 22px; }
+.article-content figure.highlight::-webkit-scrollbar { height: 8px; }.article-content figure.highlight::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(255,255,255,.25); }
 .archive-page { width: min(900px, calc(100% - 48px)); }.archive-header { margin-bottom: 50px; }.archive-header h1 { display: inline-block; margin: 0 22px 0 0; font: 500 46px "Kiwi Maru", serif; }.archive-header span { color: var(--muted); font-size: 12px; }.archive-list { border-top: 1px solid var(--ink); }.archive-list a { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 24px; padding: 24px 8px; border-bottom: 1px solid var(--line); transition: background .2s, padding .2s; }.archive-list a:hover { padding-right: 16px; padding-left: 16px; background: #fff4ef; }.archive-list time { color: var(--muted); font: 12px "Kiwi Maru", serif; }.archive-list strong { font: 500 18px "Kiwi Maru", serif; }.archive-list span { color: var(--pink-dark); }
 .site-footer { padding: 45px 0; border-top: 1px solid var(--line); background: #45383b; color: #f8ebe4; }.footer-inner { width: min(1180px, calc(100% - 48px)); margin: auto; display: flex; align-items: end; justify-content: space-between; gap: 30px; }.footer-inner strong { font: 500 18px "Kiwi Maru", serif; }.footer-inner p { margin: 5px 0 0; color: #cbb7b7; font-size: 12px; }.copyright { text-align: right; }
 
