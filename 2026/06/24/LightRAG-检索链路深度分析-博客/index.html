@@ -50,7 +50,7 @@
         <div class="tag-row article-tags"></div>
       </div>
     </div>
-    <div class="article-content"><h1 id="LightRAG-四条检索链路：local-global-hybrid-mix-一次讲透"><a href="#LightRAG-四条检索链路：local-global-hybrid-mix-一次讲透" class="headerlink" title="LightRAG 四条检索链路：local &#x2F; global &#x2F; hybrid &#x2F; mix 一次讲透"></a>LightRAG 四条检索链路：local &#x2F; global &#x2F; hybrid &#x2F; mix 一次讲透</h1><blockquote>
+    <div class="article-content"><blockquote>
 <p>假设你已经知道 LightRAG 在做”图增强的 RAG”，本文只聚焦检索链路本身：四种模式怎么走、token 怎么砍、多路结果怎么合并排序、rerank 在哪一步起作用。</p>
 <p>阅读前置：知道有”实体””关系””chunk”三种东西就够了——实体是图里的节点（如 <code>LightRAG</code>），关系是图里的边（如 <code>LightRAG → GraphRAG</code>），chunk 是文档切片原文。</p>
 </blockquote>
@@ -311,98 +311,264 @@
 <figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">doc1.pdf 被 3 个 chunk 引用 → reference_id = 1</span><br><span class="line">doc2.pdf 被 1 个 chunk 引用 → reference_id = 2</span><br></pre></td></tr></table></figure>
 
 <h3 id="5-6-最终送给-LLM-的上下文结构"><a href="#5-6-最终送给-LLM-的上下文结构" class="headerlink" title="5.6 最终送给 LLM 的上下文结构"></a>5.6 最终送给 LLM 的上下文结构</h3><p><code>kg_query_context</code> 模板把三块知识装进结构化 JSON：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">---Knowledge Graph Data (Entity)---</span><br><span class="line">```json</span><br><span class="line">&#123;&quot;entity&quot;: &quot;LightRAG&quot;, &quot;type&quot;: &quot;框架&quot;, &quot;description&quot;: &quot;...&quot;, &quot;created_at&quot;: &quot;...&quot;&#125;</span><br></pre></td></tr></table></figure>
-<p>—Knowledge Graph Data (Relationship)—</p>
-<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span><span class="attr">&quot;entity1&quot;</span><span class="punctuation">:</span> <span class="string">&quot;LightRAG&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;entity2&quot;</span><span class="punctuation">:</span> <span class="string">&quot;GraphRAG&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;description&quot;</span><span class="punctuation">:</span> <span class="string">&quot;...&quot;</span><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
-<p>—Document Chunks—</p>
-<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span><span class="attr">&quot;reference_id&quot;</span><span class="punctuation">:</span> <span class="string">&quot;1&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;content&quot;</span><span class="punctuation">:</span> <span class="string">&quot;LightRAG是...&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;content_headings&quot;</span><span class="punctuation">:</span> <span class="string">&quot;Section 1 → ...&quot;</span><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
-<p>—Reference Document List—<br>[1] doc1.pdf<br>[2] doc2.pdf</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"></span><br><span class="line">**为什么用 JSON 而非自然语言？** 结构化 JSON 让 LLM 精确解析每个字段，`reference_id` 让它给可追溯出处，`content_headings` 帮它理解 chunk 在原文的位置。检索结果以机器可读结构交付、由 LLM 消化成自然语言。</span><br><span class="line"></span><br><span class="line">---</span><br><span class="line"></span><br><span class="line">## 六、四条链路全程对比</span><br><span class="line"></span><br><span class="line">### 6.1 一个 mix 查询的数据形态演变</span><br><span class="line"></span><br></pre></td></tr></table></figure>
-<p>① query: “LightRAG 如何做图检索增强？”</p>
-<p>② 关键词: (ll&#x3D;[“LightRAG”,”知识图谱”], hl&#x3D;[“图检索增强”,”RAG框架”])</p>
-<p>③ embedding 三元组 (一次批量调用): (query_emb, ll_emb, hl_emb)</p>
-<p>④ Stage 1 三路原始检索:<br>   final_entities ~35个   (local+global 合并去重后)<br>   final_relations ~40个  (同上)<br>   vector_chunks  ~20个   (仅 mix)</p>
-<p>⑤ Stage 2 token 截断后:<br>   entities_context 19个 (6000t内)  + filtered_entities 19个原始dict<br>   relations_context 20个 (8000t内) + filtered_relations 20个原始dict</p>
-<p>⑥ Stage 3 chunk 合并去重后:<br>   merged_chunks ~50个 {content, chunk_id, (content_headings)}<br>   chunk_tracking 标注来源 E&#x2F;R&#x2F;C</p>
-<p>⑦ Stage 4 动态预算 + rerank:<br>   available_chunk_tokens &#x3D; 30000 - sys_prompt - kg_context - query - 200<br>   → rerank → 过滤score&lt;0.5 → chunk_top_k&#x3D;20 → token裁剪 → 15个 {id:”DC1”,…}</p>
-<p>⑧ 引用编号: 15个chunk带reference_id，references按频次排序</p>
-<p>⑨ LLM上下文: kg_query_context模板填充 + raw_data</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br></pre></td><td class="code"><pre><span class="line"></span><br><span class="line">### 6.2 四条链路对比总表</span><br><span class="line"></span><br><span class="line">| 阶段 | local | global | hybrid | mix |</span><br><span class="line">|---|---|---|---|---|</span><br><span class="line">| **关键词** | 只用 ll | 只用 hl | ll+hl | ll+hl |</span><br><span class="line">| **Stage 1 实体来源** | entities_vdb | 关系反查 | 两路合并 | 两路合并 |</span><br><span class="line">| **Stage 1 实体排序** | 向量相似度降序 | 跟随边序 | round-robin（local优先）+名字去重 | 同 hybrid |</span><br><span class="line">| **Stage 1 关系来源** | 实体一跳边 | relationships_vdb | 两路合并 | 两路合并 |</span><br><span class="line">| **Stage 1 关系排序** | (rank,weight)降序 | 向量相似度降序 | round-robin + sorted((src,tgt))去重 | 同 hybrid |</span><br><span class="line">| **vector_chunks** | ✗ | ✗ | ✗ | ✓ ~20个 |</span><br><span class="line">| **Stage 2 截断** | 同一函数，预算相同 | 同左 | 截断合并后的结果 | 同 hybrid |</span><br><span class="line">| **Stage 3 chunk 来源** | E 路 | R 路 | E+R 两路 | **C+E+R 三路** |</span><br><span class="line">| **Stage 3 合并序** | E 路内序 | R 路内序 | E/R 交替（E优先） | C&gt;E&gt;R 交替 |</span><br><span class="line">| **Stage 4 rerank 作用对象** | E 路 chunk | R 路 chunk | E+R chunk | **C+E+R 统一** |</span><br><span class="line">| **rerank 开启时最终序** | rerank分数降序 | rerank分数降序 | rerank分数降序 | rerank分数降序 |</span><br><span class="line">| **无 rerank 时最终序** | E 路内序 | R 路内序 | E/R 交织序 | C&gt;E&gt;R 交织序 |</span><br><span class="line"></span><br><span class="line">---</span><br><span class="line"></span><br><span class="line">## 七、mix 给 LLM 的上下文和前三者一样吗？</span><br><span class="line"></span><br><span class="line">一个常见疑问：mix 比 hybrid 多了一路 C（纯向量 chunk），那它最终塞给 LLM 的上下文是不是也比前三者多？</span><br><span class="line"></span><br><span class="line">### 7.1 结构一样，但 chunk 来源多样性不同</span><br><span class="line"></span><br><span class="line">四种模式最终都套同一个 `kg_query_context` 模板，都是 **Entity / Relationship / Chunks / References** 四块结构。差别只在 chunk 是怎么来的、候选池有多大：</span><br><span class="line"></span><br><span class="line">| 模式 | chunk 来源 | Stage 3 合并后候选数 | 最终送 LLM 的 chunk 数 |</span><br><span class="line">|---|---|---|---|</span><br><span class="line">| local | E 路（实体反查） | ~30 | 受 `chunk_top_k=20` 和 token 预算裁剪 |</span><br><span class="line">| global | R 路（关系反查） | ~25 | 同上 |</span><br><span class="line">| hybrid | E + R | ~40 | 同上 |</span><br><span class="line">| **mix** | **C + E + R** | **~50** | **同上** |</span><br><span class="line"></span><br><span class="line">关键点：**不管合并了多少候选，最终都过同一个 `process_chunks_unified` 五步流水线**，被 `chunk_top_k=20` 硬上限和动态 token 预算压到十几条。</span><br><span class="line"></span><br><span class="line">### 7.2 举例：mix 不是&quot;送更多 chunk&quot;，是&quot;从更多样候选里精选同样数量&quot;</span><br><span class="line"></span><br><span class="line">假设四种模式跑同一个 query，Stage 3 合并后的候选数：</span><br><span class="line"></span><br></pre></td></tr></table></figure>
-<p>local:   30 个候选 → rerank → 过滤 → chunk_top_k&#x3D;20 → token裁 → 最终 12 个<br>global:  25 个候选 → 同流水线 → 最终 11 个<br>hybrid:  40 个候选 → 同流水线 → 最终 15 个<br>mix:     50 个候选 → 同流水线 → 最终 15 个</p>
-<pre><code>
-mix 的候选池最大（50），但**出口被同一个 `chunk_top_k=20` 和 token 预算卡住**，所以送进 LLM 的 chunk 数量并不比 hybrid 多多少。**多样性进得来，总量出不去。**
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">---Knowledge Graph Data (Entity)---</span><br><span class="line">```json</span><br><span class="line">&#123;&quot;entity&quot;: &quot;LightRAG&quot;, &quot;type&quot;: &quot;框架&quot;, &quot;description&quot;: &quot;...&quot;, &quot;created_at&quot;: &quot;...&quot;&#125;</span><br><span class="line">```</span><br><span class="line">---Knowledge Graph Data (Relationship)---</span><br><span class="line">```json</span><br><span class="line">&#123;&quot;entity1&quot;: &quot;LightRAG&quot;, &quot;entity2&quot;: &quot;GraphRAG&quot;, &quot;description&quot;: &quot;...&quot;&#125;</span><br><span class="line">```</span><br><span class="line">---Document Chunks---</span><br><span class="line">```json</span><br><span class="line">&#123;&quot;reference_id&quot;: &quot;1&quot;, &quot;content&quot;: &quot;LightRAG是...&quot;, &quot;content_headings&quot;: &quot;Section 1 → ...&quot;&#125;</span><br><span class="line">```</span><br><span class="line">---Reference Document List---</span><br><span class="line">[1] doc1.pdf</span><br><span class="line">[2] doc2.pdf</span><br></pre></td></tr></table></figure>
 
-mix 真正多出来的不是 chunk 数量，而是 **C 路这个独立信号源**——用户原话直接查的向量结果，给 rerank 提供了更丰富的候选池，让最终选中的 15 个更可能命中&quot;图检索死角&quot;。
+<p><strong>为什么用 JSON 而非自然语言？</strong> 结构化 JSON 让 LLM 精确解析每个字段，<code>reference_id</code> 让它给可追溯出处，<code>content_headings</code> 帮它理解 chunk 在原文的位置。检索结果以机器可读结构交付、由 LLM 消化成自然语言。</p>
+<hr>
+<h2 id="六、四条链路全程对比"><a href="#六、四条链路全程对比" class="headerlink" title="六、四条链路全程对比"></a>六、四条链路全程对比</h2><h3 id="6-1-一个-mix-查询的数据形态演变"><a href="#6-1-一个-mix-查询的数据形态演变" class="headerlink" title="6.1 一个 mix 查询的数据形态演变"></a>6.1 一个 mix 查询的数据形态演变</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">① query: &quot;LightRAG 如何做图检索增强？&quot;</span><br><span class="line"></span><br><span class="line">② 关键词: (ll=[&quot;LightRAG&quot;,&quot;知识图谱&quot;], hl=[&quot;图检索增强&quot;,&quot;RAG框架&quot;])</span><br><span class="line"></span><br><span class="line">③ embedding 三元组 (一次批量调用): (query_emb, ll_emb, hl_emb)</span><br><span class="line"></span><br><span class="line">④ Stage 1 三路原始检索:</span><br><span class="line">   final_entities ~35个   (local+global 合并去重后)</span><br><span class="line">   final_relations ~40个  (同上)</span><br><span class="line">   vector_chunks  ~20个   (仅 mix)</span><br><span class="line"></span><br><span class="line">⑤ Stage 2 token 截断后:</span><br><span class="line">   entities_context 19个 (6000t内)  + filtered_entities 19个原始dict</span><br><span class="line">   relations_context 20个 (8000t内) + filtered_relations 20个原始dict</span><br><span class="line"></span><br><span class="line">⑥ Stage 3 chunk 合并去重后:</span><br><span class="line">   merged_chunks ~50个 &#123;content, chunk_id, (content_headings)&#125;</span><br><span class="line">   chunk_tracking 标注来源 E/R/C</span><br><span class="line"></span><br><span class="line">⑦ Stage 4 动态预算 + rerank:</span><br><span class="line">   available_chunk_tokens = 30000 - sys_prompt - kg_context - query - 200</span><br><span class="line">   → rerank → 过滤score&lt;0.5 → chunk_top_k=20 → token裁剪 → 15个 &#123;id:&quot;DC1&quot;,...&#125;</span><br><span class="line"></span><br><span class="line">⑧ 引用编号: 15个chunk带reference_id，references按频次排序</span><br><span class="line"></span><br><span class="line">⑨ LLM上下文: kg_query_context模板填充 + raw_data</span><br></pre></td></tr></table></figure>
 
-### 7.3 那 mix 到底比 hybrid 强在哪？
+<h3 id="6-2-四条链路对比总表"><a href="#6-2-四条链路对比总表" class="headerlink" title="6.2 四条链路对比总表"></a>6.2 四条链路对比总表</h3><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>local</th>
+<th>global</th>
+<th>hybrid</th>
+<th>mix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>关键词</strong></td>
+<td>只用 ll</td>
+<td>只用 hl</td>
+<td>ll+hl</td>
+<td>ll+hl</td>
+</tr>
+<tr>
+<td><strong>Stage 1 实体来源</strong></td>
+<td>entities_vdb</td>
+<td>关系反查</td>
+<td>两路合并</td>
+<td>两路合并</td>
+</tr>
+<tr>
+<td><strong>Stage 1 实体排序</strong></td>
+<td>向量相似度降序</td>
+<td>跟随边序</td>
+<td>round-robin（local优先）+名字去重</td>
+<td>同 hybrid</td>
+</tr>
+<tr>
+<td><strong>Stage 1 关系来源</strong></td>
+<td>实体一跳边</td>
+<td>relationships_vdb</td>
+<td>两路合并</td>
+<td>两路合并</td>
+</tr>
+<tr>
+<td><strong>Stage 1 关系排序</strong></td>
+<td>(rank,weight)降序</td>
+<td>向量相似度降序</td>
+<td>round-robin + sorted((src,tgt))去重</td>
+<td>同 hybrid</td>
+</tr>
+<tr>
+<td><strong>vector_chunks</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✓ ~20个</td>
+</tr>
+<tr>
+<td><strong>Stage 2 截断</strong></td>
+<td>同一函数，预算相同</td>
+<td>同左</td>
+<td>截断合并后的结果</td>
+<td>同 hybrid</td>
+</tr>
+<tr>
+<td><strong>Stage 3 chunk 来源</strong></td>
+<td>E 路</td>
+<td>R 路</td>
+<td>E+R 两路</td>
+<td><strong>C+E+R 三路</strong></td>
+</tr>
+<tr>
+<td><strong>Stage 3 合并序</strong></td>
+<td>E 路内序</td>
+<td>R 路内序</td>
+<td>E&#x2F;R 交替（E优先）</td>
+<td>C&gt;E&gt;R 交替</td>
+</tr>
+<tr>
+<td><strong>Stage 4 rerank 作用对象</strong></td>
+<td>E 路 chunk</td>
+<td>R 路 chunk</td>
+<td>E+R chunk</td>
+<td><strong>C+E+R 统一</strong></td>
+</tr>
+<tr>
+<td><strong>rerank 开启时最终序</strong></td>
+<td>rerank分数降序</td>
+<td>rerank分数降序</td>
+<td>rerank分数降序</td>
+<td>rerank分数降序</td>
+</tr>
+<tr>
+<td><strong>无 rerank 时最终序</strong></td>
+<td>E 路内序</td>
+<td>R 路内序</td>
+<td>E&#x2F;R 交织序</td>
+<td>C&gt;E&gt;R 交织序</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="七、mix-给-LLM-的上下文和前三者一样吗？"><a href="#七、mix-给-LLM-的上下文和前三者一样吗？" class="headerlink" title="七、mix 给 LLM 的上下文和前三者一样吗？"></a>七、mix 给 LLM 的上下文和前三者一样吗？</h2><p>一个常见疑问：mix 比 hybrid 多了一路 C（纯向量 chunk），那它最终塞给 LLM 的上下文是不是也比前三者多？</p>
+<h3 id="7-1-结构一样，但-chunk-来源多样性不同"><a href="#7-1-结构一样，但-chunk-来源多样性不同" class="headerlink" title="7.1 结构一样，但 chunk 来源多样性不同"></a>7.1 结构一样，但 chunk 来源多样性不同</h3><p>四种模式最终都套同一个 <code>kg_query_context</code> 模板，都是 <strong>Entity &#x2F; Relationship &#x2F; Chunks &#x2F; References</strong> 四块结构。差别只在 chunk 是怎么来的、候选池有多大：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>chunk 来源</th>
+<th>Stage 3 合并后候选数</th>
+<th>最终送 LLM 的 chunk 数</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>local</td>
+<td>E 路（实体反查）</td>
+<td>~30</td>
+<td>受 <code>chunk_top_k=20</code> 和 token 预算裁剪</td>
+</tr>
+<tr>
+<td>global</td>
+<td>R 路（关系反查）</td>
+<td>~25</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>hybrid</td>
+<td>E + R</td>
+<td>~40</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>mix</strong></td>
+<td><strong>C + E + R</strong></td>
+<td><strong>~50</strong></td>
+<td><strong>同上</strong></td>
+</tr>
+</tbody></table>
+<p>关键点：<strong>不管合并了多少候选，最终都过同一个 <code>process_chunks_unified</code> 五步流水线</strong>，被 <code>chunk_top_k=20</code> 硬上限和动态 token 预算压到十几条。</p>
+<h3 id="7-2-举例：mix-不是”送更多-chunk”，是”从更多样候选里精选同样数量”"><a href="#7-2-举例：mix-不是”送更多-chunk”，是”从更多样候选里精选同样数量”" class="headerlink" title="7.2 举例：mix 不是”送更多 chunk”，是”从更多样候选里精选同样数量”"></a>7.2 举例：mix 不是”送更多 chunk”，是”从更多样候选里精选同样数量”</h3><p>假设四种模式跑同一个 query，Stage 3 合并后的候选数：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">local:   30 个候选 → rerank → 过滤 → chunk_top_k=20 → token裁 → 最终 12 个</span><br><span class="line">global:  25 个候选 → 同流水线 → 最终 11 个</span><br><span class="line">hybrid:  40 个候选 → 同流水线 → 最终 15 个</span><br><span class="line">mix:     50 个候选 → 同流水线 → 最终 15 个</span><br></pre></td></tr></table></figure>
 
-不是&quot;信息更多&quot;，而是&quot;**信号更全**&quot;。举个具体场景：
-
-&gt; 用户问：&quot;LightRAG 的 pip 安装命令是什么？&quot;
-
-这个信息大概率藏在某段 chunk 原文里，**根本没被抽成实体**（&quot;pip install&quot; 不是实体）。于是：
-
-- hybrid：E+R 两路都查不到 → 这个 chunk 进不来 → LLM 答不出
-- mix：C 路用用户原话直接查 chunk 向量库 → 命中那段 chunk → LLM 能答
-
-mix 多出来的不是 chunk 的&quot;数量&quot;，是&quot;**图检索覆盖不到的 chunk 的可达性**&quot;。这才是 mix 的真实价值。
-
----
-
-## 八、四个排序依据的灵魂总结
-
-回答你最关心的&quot;排序依据&quot;问题，一层一层拆开：
-
-### 8.1 Stage 1 的排序依据：存储内部
-
-| | 实体 | 关系 |
-|---|---|---|
-| local | 向量相似度（语义） | (度数rank, 权重weight) 双键降序（结构） |
-| global | 跟随边序，不排序 | 向量相似度（语义） |
-
-依据是&quot;存储内部天然信号&quot;：向量库给相似度，图给度数和权重。local 实体靠语义找对锚点、关系靠结构展开上下文；global 关系靠语义找对主题、实体跟随。
-
-### 8.2 Stage 2 的排序依据：不变
-
-Stage 2 只截断不排序，**完全沿用 Stage 1 的顺序**从前往后塞 token 预算，塞满就停。
-
-### 8.3 Stage 3 的排序依据：位置级 round-robin
-
-| 模式 | 合并对象 | 优先级 |
-|---|---|---|
-| hybrid | E + R | E 优先 |
-| mix | C + E + R | C &gt; E &gt; R |
-
-依据是&quot;来源贴合度&quot;：C 是用户原话直接查的最贴、E 是实体反查的次之、R 是关系反查的兜底。round-robin 让多路信号在位置维度均匀铺开，不是简单拼接。
-
-### 8.4 Stage 4 的排序依据：rerank 模型的相关性分数
-
-**rerank 一旦开启，前面所有排序全部被覆盖**。rerank 模型是 cross-encoder，把 query 和每个 chunk 拼一起做精细相关性判断，输出 `relevance_score`，按分数降序就是最终顺序。
-
-依据是&quot;独立模型在统一相关性维度上的判断&quot;——比 cosine 相似度更准，比图结构更贴合查询意图。
-
-### 8.5 一句话本质
-
-&gt; local/global 的排序是「存储内部」的排序（相似度或图结构），hybrid/mix 的排序是「序列间」的排序（round-robin 交织），Stage 4 的 rerank 是「相关性维度」的统一重排——把前面所有基于相似度/结构的排序全部压平。
-
----
-
-## 附：常用默认值速查
-
-来源：`lightrag/constants.py`
-
-| 常量 | 默认值 | 含义 |
-|---|---|---|
-| `DEFAULT_TOP_K` | 40 | 实体/关系向量检索条数 |
-| `DEFAULT_CHUNK_TOP_K` | 20 | chunk 初始检索 / rerank top_n / 硬上限 |
-| `DEFAULT_MAX_ENTITY_TOKENS` | 6000 | 实体 token 预算 |
-| `DEFAULT_MAX_RELATION_TOKENS` | 8000 | 关系 token 预算 |
-| `DEFAULT_MAX_TOTAL_TOKENS` | 30000 | 总 token 预算 |
-| `DEFAULT_RELATED_CHUNK_NUMBER` | 5 | 每个实体的 chunk 配额上限 |
-| `DEFAULT_KG_CHUNK_PICK_METHOD` | `&quot;VECTOR&quot;` | chunk 选择策略 |
-| `GRAPH_FIELD_SEP` | `&quot;&lt;SEP&gt;&quot;` | source_id 的 chunk_id 分隔符 |
-| `min_rerank_score` | 0.5 | rerank 过滤阈值（1.0 视为通过） |
-</code></pre>
+<p>mix 的候选池最大（50），但<strong>出口被同一个 <code>chunk_top_k=20</code> 和 token 预算卡住</strong>，所以送进 LLM 的 chunk 数量并不比 hybrid 多多少。<strong>多样性进得来，总量出不去。</strong></p>
+<p>mix 真正多出来的不是 chunk 数量，而是 <strong>C 路这个独立信号源</strong>——用户原话直接查的向量结果，给 rerank 提供了更丰富的候选池，让最终选中的 15 个更可能命中”图检索死角”。</p>
+<h3 id="7-3-那-mix-到底比-hybrid-强在哪？"><a href="#7-3-那-mix-到底比-hybrid-强在哪？" class="headerlink" title="7.3 那 mix 到底比 hybrid 强在哪？"></a>7.3 那 mix 到底比 hybrid 强在哪？</h3><p>不是”信息更多”，而是”<strong>信号更全</strong>“。举个具体场景：</p>
+<blockquote>
+<p>用户问：”LightRAG 的 pip 安装命令是什么？”</p>
+</blockquote>
+<p>这个信息大概率藏在某段 chunk 原文里，<strong>根本没被抽成实体</strong>（”pip install” 不是实体）。于是：</p>
+<ul>
+<li>hybrid：E+R 两路都查不到 → 这个 chunk 进不来 → LLM 答不出</li>
+<li>mix：C 路用用户原话直接查 chunk 向量库 → 命中那段 chunk → LLM 能答</li>
+</ul>
+<p>mix 多出来的不是 chunk 的”数量”，是”<strong>图检索覆盖不到的 chunk 的可达性</strong>“。这才是 mix 的真实价值。</p>
+<hr>
+<h2 id="八、四个排序依据的灵魂总结"><a href="#八、四个排序依据的灵魂总结" class="headerlink" title="八、四个排序依据的灵魂总结"></a>八、四个排序依据的灵魂总结</h2><p>回答你最关心的”排序依据”问题，一层一层拆开：</p>
+<h3 id="8-1-Stage-1-的排序依据：存储内部"><a href="#8-1-Stage-1-的排序依据：存储内部" class="headerlink" title="8.1 Stage 1 的排序依据：存储内部"></a>8.1 Stage 1 的排序依据：存储内部</h3><table>
+<thead>
+<tr>
+<th></th>
+<th>实体</th>
+<th>关系</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>local</td>
+<td>向量相似度（语义）</td>
+<td>(度数rank, 权重weight) 双键降序（结构）</td>
+</tr>
+<tr>
+<td>global</td>
+<td>跟随边序，不排序</td>
+<td>向量相似度（语义）</td>
+</tr>
+</tbody></table>
+<p>依据是”存储内部天然信号”：向量库给相似度，图给度数和权重。local 实体靠语义找对锚点、关系靠结构展开上下文；global 关系靠语义找对主题、实体跟随。</p>
+<h3 id="8-2-Stage-2-的排序依据：不变"><a href="#8-2-Stage-2-的排序依据：不变" class="headerlink" title="8.2 Stage 2 的排序依据：不变"></a>8.2 Stage 2 的排序依据：不变</h3><p>Stage 2 只截断不排序，<strong>完全沿用 Stage 1 的顺序</strong>从前往后塞 token 预算，塞满就停。</p>
+<h3 id="8-3-Stage-3-的排序依据：位置级-round-robin"><a href="#8-3-Stage-3-的排序依据：位置级-round-robin" class="headerlink" title="8.3 Stage 3 的排序依据：位置级 round-robin"></a>8.3 Stage 3 的排序依据：位置级 round-robin</h3><table>
+<thead>
+<tr>
+<th>模式</th>
+<th>合并对象</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>hybrid</td>
+<td>E + R</td>
+<td>E 优先</td>
+</tr>
+<tr>
+<td>mix</td>
+<td>C + E + R</td>
+<td>C &gt; E &gt; R</td>
+</tr>
+</tbody></table>
+<p>依据是”来源贴合度”：C 是用户原话直接查的最贴、E 是实体反查的次之、R 是关系反查的兜底。round-robin 让多路信号在位置维度均匀铺开，不是简单拼接。</p>
+<h3 id="8-4-Stage-4-的排序依据：rerank-模型的相关性分数"><a href="#8-4-Stage-4-的排序依据：rerank-模型的相关性分数" class="headerlink" title="8.4 Stage 4 的排序依据：rerank 模型的相关性分数"></a>8.4 Stage 4 的排序依据：rerank 模型的相关性分数</h3><p><strong>rerank 一旦开启，前面所有排序全部被覆盖</strong>。rerank 模型是 cross-encoder，把 query 和每个 chunk 拼一起做精细相关性判断，输出 <code>relevance_score</code>，按分数降序就是最终顺序。</p>
+<p>依据是”独立模型在统一相关性维度上的判断”——比 cosine 相似度更准，比图结构更贴合查询意图。</p>
+<h3 id="8-5-一句话本质"><a href="#8-5-一句话本质" class="headerlink" title="8.5 一句话本质"></a>8.5 一句话本质</h3><blockquote>
+<p>local&#x2F;global 的排序是「存储内部」的排序（相似度或图结构），hybrid&#x2F;mix 的排序是「序列间」的排序（round-robin 交织），Stage 4 的 rerank 是「相关性维度」的统一重排——把前面所有基于相似度&#x2F;结构的排序全部压平。</p>
+</blockquote>
+<hr>
+<h2 id="附：常用默认值速查"><a href="#附：常用默认值速查" class="headerlink" title="附：常用默认值速查"></a>附：常用默认值速查</h2><p>来源：<code>lightrag/constants.py</code></p>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>默认值</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DEFAULT_TOP_K</code></td>
+<td>40</td>
+<td>实体&#x2F;关系向量检索条数</td>
+</tr>
+<tr>
+<td><code>DEFAULT_CHUNK_TOP_K</code></td>
+<td>20</td>
+<td>chunk 初始检索 &#x2F; rerank top_n &#x2F; 硬上限</td>
+</tr>
+<tr>
+<td><code>DEFAULT_MAX_ENTITY_TOKENS</code></td>
+<td>6000</td>
+<td>实体 token 预算</td>
+</tr>
+<tr>
+<td><code>DEFAULT_MAX_RELATION_TOKENS</code></td>
+<td>8000</td>
+<td>关系 token 预算</td>
+</tr>
+<tr>
+<td><code>DEFAULT_MAX_TOTAL_TOKENS</code></td>
+<td>30000</td>
+<td>总 token 预算</td>
+</tr>
+<tr>
+<td><code>DEFAULT_RELATED_CHUNK_NUMBER</code></td>
+<td>5</td>
+<td>每个实体的 chunk 配额上限</td>
+</tr>
+<tr>
+<td><code>DEFAULT_KG_CHUNK_PICK_METHOD</code></td>
+<td><code>&quot;VECTOR&quot;</code></td>
+<td>chunk 选择策略</td>
+</tr>
+<tr>
+<td><code>GRAPH_FIELD_SEP</code></td>
+<td><code>&quot;&lt;SEP&gt;&quot;</code></td>
+<td>source_id 的 chunk_id 分隔符</td>
+</tr>
+<tr>
+<td><code>min_rerank_score</code></td>
+<td>0.5</td>
+<td>rerank 过滤阈值（1.0 视为通过）</td>
+</tr>
+</tbody></table>
 </div>
   </article>
 </div>

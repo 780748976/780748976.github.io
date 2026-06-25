@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>混合检索到底值不值得用？一份 dense / RRF / rerank 的对照实验 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.06.25 · AFTER SCHOOL NOTES</p>
+        <h1>混合检索到底值不值得用？一份 dense / RRF / rerank 的对照实验</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>“加了 BM25 和 rerank，检索效果一定更好吗？”——这句话在 RAG 项目里几乎成了默认假设。但跑一次正经的对照实验你会发现：<strong>有时候加了反而更差</strong>。</p>
+<p>本文先用一个小例子把 Hit@K、MRR、Recall@K、nDCG 讲到能自己算出来，再用一个在两个数据集上跑的对照实验，回答”混合检索到底什么时候才值得用”。</p>
+<p>阅读前置：知道”向量检索””BM25””rerank”大概是什么就够了。</p>
+</blockquote>
+<hr>
+<h2 id="一、先搞懂指标：Hit-K-MRR-Recall-K-nDCG"><a href="#一、先搞懂指标：Hit-K-MRR-Recall-K-nDCG" class="headerlink" title="一、先搞懂指标：Hit@K &#x2F; MRR &#x2F; Recall@K &#x2F; nDCG"></a>一、先搞懂指标：Hit@K &#x2F; MRR &#x2F; Recall@K &#x2F; nDCG</h2><p>比较检索好坏，得先有标尺。检索评测的核心思路极简：</p>
+<blockquote>
+<p>给你一个 query，已经标注好哪些文档相关（叫 <strong>qrels</strong>）。你把方法返回的<strong>排序列表</strong>拿来，按”相关文档排得有多靠前”打分。</p>
+</blockquote>
+<p>下面用一个贯穿全文的小例子。假设：</p>
+<ul>
+<li><strong>query</strong>：检索一个医学问题</li>
+<li><strong>标注的相关文档（qrels）</strong>：<code>&#123;D2, D5&#125;</code>（只有这两篇相关）</li>
+<li><strong>某方法返回的 top-5 排序</strong>：<code>[D1, D2, D3, D6, D5]</code></li>
+</ul>
+<p>两个相关文档 D2、D5 都在 top-5 里，但都不在第一位（D2 排第 2，D5 排第 5）。下面四个指标分别从不同角度给这个结果打分。</p>
+<h3 id="1-1-Hit-K-——-top-K-里有没有”中”"><a href="#1-1-Hit-K-——-top-K-里有没有”中”" class="headerlink" title="1.1 Hit@K —— top-K 里有没有”中”"></a>1.1 Hit@K —— top-K 里有没有”中”</h3><p>最直观。<strong>top-K 个结果里只要有一个相关文档，就算命中，记 1；否则 0。</strong> 对所有 query 求平均。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>计算</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hit@1</td>
+<td>{D1} ∩ {D2,D5} &#x3D; ∅</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Hit@3</td>
+<td>{D1,D2,D3} 含 D2</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Hit@5</td>
+<td>{D1,D2,D3,D6,D5} 含 D2,D5</td>
+<td>1</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>Hit@K 只看”有没有”，不看”排第几”。它衡量的是<strong>召回体验</strong>——用户翻 K 条能不能找到答案。</p>
+</blockquote>
+<h3 id="1-2-MRR-——-第一个相关的位置"><a href="#1-2-MRR-——-第一个相关的位置" class="headerlink" title="1.2 MRR —— 第一个相关的位置"></a>1.2 MRR —— 第一个相关的位置</h3><p>MRR（Mean Reciprocal Rank）关心<strong>第一个相关文档排在第几位</strong>，取其倒数。排得越靠前分越高。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">RR = 1 / (第一个相关文档的排名)</span><br></pre></td></tr></table></figure>
+
+<p>本例第一个相关是 D2，排第 2，所以 <code>RR = 1/2 = 0.5</code>。若 D2 排第 1 → <code>1/1 = 1.0</code>（满分）；若 top-K 里一个相关都没有 → 0。MRR 就是所有 query 的 RR 平均值。</p>
+<blockquote>
+<p>MRR 适合”用户只看第一条”的场景（问答、搜索首条）。它<strong>只看第一个</strong>相关，后面的相关文档排第几不影响分数。</p>
+</blockquote>
+<h3 id="1-3-Recall-K-——-相关文档召回了多少"><a href="#1-3-Recall-K-——-相关文档召回了多少" class="headerlink" title="1.3 Recall@K —— 相关文档召回了多少"></a>1.3 Recall@K —— 相关文档召回了多少</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Recall@K = (top-K 里命中的相关文档数) / (该 query 的全部相关文档数)</span><br></pre></td></tr></table></figure>
+
+<p>它衡量”漏没漏”。本例总相关 2 个（{D2,D5}）：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>计算</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Recall@3</td>
+<td>top3 命中 {D2} &#x3D; 1 &#x2F; 2</td>
+<td>0.5（漏了 D5）</td>
+</tr>
+<tr>
+<td>Recall@5</td>
+<td>top5 命中 {D2,D5} &#x3D; 2 &#x2F; 2</td>
+<td>1.0（全召回）</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>Recall 和 Hit 的区别：<strong>Hit 只要有 1 个就 1.0；Recall 看召回比例</strong>。当相关文档多（一个 query 有十几篇相关）时，两者差别巨大——Hit@10 可能满分，Recall@10 才零点几。</p>
+</blockquote>
+<h3 id="1-4-nDCG-K-——-排得多好（带位置折扣）"><a href="#1-4-nDCG-K-——-排得多好（带位置折扣）" class="headerlink" title="1.4 nDCG@K —— 排得多好（带位置折扣）"></a>1.4 nDCG@K —— 排得多好（带位置折扣）</h3><p>最”重”也最常用的指标。核心思想：<strong>相关文档排得越靠前越好，且位置越靠后贡献衰减越快</strong>（对数折扣）。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">DCG@K  = Σ ( rel_i / log2(i+1) )        # i 为排名，从 1 起；rel_i 为相关性</span><br><span class="line">IDCG@K = 理想排序下的 DCG（把相关文档全顶到最前）</span><br><span class="line">nDCG@K = DCG@K / IDCG@K    ∈ [0, 1]</span><br></pre></td></tr></table></figure>
+
+<p>本例用二值相关性（相关记 1，无关记 0），只有 D2（rank 2）和 D5（rank 5）有贡献：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">DCG@5  = 1/log2(3)  + 1/log2(6)</span><br><span class="line">       = 0.6309 + 0.3869 = 1.018        # D2 在第2位, D5 在第5位</span><br><span class="line"></span><br><span class="line">IDCG@5 = 1/log2(2)  + 1/log2(3)          # 理想: D2、D5 排第 1、2 位</span><br><span class="line">       = 1.0 + 0.6309 = 1.631</span><br><span class="line"></span><br><span class="line">nDCG@5 = 1.018 / 1.631 = 0.624</span><br></pre></td></tr></table></figure>
+
+<blockquote>
+<p>nDCG 同时考虑”有没有”和”排第几”，还用对数折扣区分”第 1 名”和”第 5 名”的价值，是 IR 评测的<strong>事实标准</strong>（BEIR、MTEB 排行榜都用它）。本文后面重点看 Hit@K、MRR、nDCG@10。</p>
+</blockquote>
+<h3 id="四个指标速查"><a href="#四个指标速查" class="headerlink" title="四个指标速查"></a>四个指标速查</h3><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>关心什么</th>
+<th>本例值（K&#x3D;5）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hit@K</td>
+<td>top-K 有没有相关</td>
+<td>1</td>
+</tr>
+<tr>
+<td>MRR</td>
+<td>第一个相关排第几</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>Recall@K</td>
+<td>相关召回比例</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>nDCG@K</td>
+<td>排序整体质量（带折扣）</td>
+<td>0.624</td>
+</tr>
+</tbody></table>
+<p>一句话记忆：**Hit 管”有没有”、MRR 管”第一条在哪”、Recall 管”漏多少”、nDCG 管”整体排得多好”**。</p>
+<hr>
+<h2 id="二、实验设计：要回答什么问题"><a href="#二、实验设计：要回答什么问题" class="headerlink" title="二、实验设计：要回答什么问题"></a>二、实验设计：要回答什么问题</h2><p>核心问题：<strong>混合检索（dense + BM25 用 RRF 融合）和 rerank 精排，到底有没有用？什么时候有用？</strong></p>
+<p>设计三组方法，在同一批 query、同一套文档向量上公平对比：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>流程</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>dense</code></td>
+<td>纯向量检索（embedding 余弦相似度）</td>
+</tr>
+<tr>
+<td><code>hybrid_rrf</code></td>
+<td>向量检索 + BM25 → <strong>RRF 融合</strong></td>
+</tr>
+<tr>
+<td><code>hybrid_rrf_rerank</code></td>
+<td>RRF 融合的候选 → <strong>rerank 模型精排</strong></td>
+</tr>
+</tbody></table>
+<p><strong>RRF（Reciprocal Rank Fusion）</strong> 是最常用的多路融合法，不看分数只看排名：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">score(d) = Σ 1 / (k + rank(d))     # 对各路结果求和, k=60</span><br></pre></td></tr></table></figure>
+
+<p>把向量检索和 BM25 各自的结果按”排名倒数”相加再排序，简单粗暴但很有效——因为两路用的打分尺度完全不同（余弦 vs 词频），直接比分数没意义，比排名才公平。</p>
+<p>两个数据集（BEIR 基准），故意挑特性相反的：</p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>领域</th>
+<th>特性</th>
+<th>dense 预期</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>SciFact</strong></td>
+<td>科学论文</td>
+<td>claim ↔ 论文，<strong>纯语义匹配</strong></td>
+<td>强</td>
+</tr>
+<tr>
+<td><strong>nfcorpus</strong></td>
+<td>医学</td>
+<td>专业术语，<strong>词面匹配重</strong></td>
+<td>弱</td>
+</tr>
+</tbody></table>
+<p>技术栈：<code>Qwen3-Embedding-4B</code>（向量）、<code>rank_bm25</code>（词法）、RRF（融合）、<code>Qwen3-Reranker-4B</code>（精排）。指标用 <code>ranx</code>（TREC 标准评测库）计算，确保口径权威。每个数据集跑全部有标注的 query（SciFact 300 条、nfcorpus 323 条）。</p>
+<hr>
+<h2 id="三、结果：两个数据集，两种结局"><a href="#三、结果：两个数据集，两种结局" class="headerlink" title="三、结果：两个数据集，两种结局"></a>三、结果：两个数据集，两种结局</h2><h3 id="3-1-SciFact（语义匹配，dense-强）"><a href="#3-1-SciFact（语义匹配，dense-强）" class="headerlink" title="3.1 SciFact（语义匹配，dense 强）"></a>3.1 SciFact（语义匹配，dense 强）</h3><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>Hit@1</th>
+<th>Hit@10</th>
+<th>MRR@10</th>
+<th>Recall@10</th>
+<th>nDCG@10</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>dense</td>
+<td>0.6267</td>
+<td>0.8933</td>
+<td>0.7076</td>
+<td>0.8867</td>
+<td>0.7447</td>
+</tr>
+<tr>
+<td>hybrid_rrf</td>
+<td>0.6167</td>
+<td>0.8667</td>
+<td>0.6983</td>
+<td>0.8526</td>
+<td>0.7281</td>
+</tr>
+<tr>
+<td>hybrid_rrf_rerank</td>
+<td><strong>0.6933</strong></td>
+<td><strong>0.9233</strong></td>
+<td><strong>0.7620</strong></td>
+<td>0.9166</td>
+<td><strong>0.7957</strong></td>
+</tr>
+</tbody></table>
+<p>dense 已经很强（nDCG@10 &#x3D; 0.74）。<strong>加 BM25+RRF 不仅没提升，反而略降</strong>（MRR 0.708 → 0.698，nDCG 0.745 → 0.728）。只有再叠一层 rerank 才把指标拉上去（MRR +5.4%）。</p>
+<h3 id="3-2-nfcorpus（词面匹配，dense-弱）"><a href="#3-2-nfcorpus（词面匹配，dense-弱）" class="headerlink" title="3.2 nfcorpus（词面匹配，dense 弱）"></a>3.2 nfcorpus（词面匹配，dense 弱）</h3><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>Hit@1</th>
+<th>Hit@10</th>
+<th>MRR@10</th>
+<th>Recall@10</th>
+<th>nDCG@10</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>dense</td>
+<td>0.4396</td>
+<td>0.7028</td>
+<td>0.5255</td>
+<td>0.1640</td>
+<td>0.3385</td>
+</tr>
+<tr>
+<td>hybrid_rrf</td>
+<td>0.5139</td>
+<td>0.7554</td>
+<td>0.5896</td>
+<td>0.1726</td>
+<td>0.3581</td>
+</tr>
+<tr>
+<td>hybrid_rrf_rerank</td>
+<td><strong>0.5449</strong></td>
+<td><strong>0.7926</strong></td>
+<td><strong>0.6395</strong></td>
+<td>0.2081</td>
+<td><strong>0.4254</strong></td>
+</tr>
+</tbody></table>
+<p>dense 明显变弱（nDCG@10 只有 0.34）。<strong>这一次 RRF 立刻有用</strong>：Hit@1 从 0.44 升到 0.51（+7.4 个百分点），MRR +6.4 个百分点。rerank 更是大涨（nDCG +25.7%）。</p>
+<blockquote>
+<p>（nfcorpus 的 Recall@10 整体偏低是数据集特性：每个 query 相关文档很多，top-10 只能覆盖一小部分，不是实现问题。）</p>
+</blockquote>
+<hr>
+<h2 id="四、洞察与实践建议"><a href="#四、洞察与实践建议" class="headerlink" title="四、洞察与实践建议"></a>四、洞察与实践建议</h2><p>把两个数据集并排放，规律立刻浮现：</p>
+<table>
+<thead>
+<tr>
+<th>数据集（特性）</th>
+<th>dense nDCG@10</th>
+<th>RRF vs dense</th>
+<th>rerank vs dense</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SciFact（语义，dense 强 0.745）</td>
+<td>0.745</td>
+<td>↓ 略降 −1.7%</td>
+<td>↑ +6.8%</td>
+</tr>
+<tr>
+<td>nfcorpus（词面，dense 弱 0.339）</td>
+<td>0.339</td>
+<td><strong>↑ +5.8%</strong></td>
+<td><strong>↑ +25.7%</strong></td>
+</tr>
+</tbody></table>
+<h3 id="洞察一：RRF-不是万能的，增益取决于-dense-的强弱"><a href="#洞察一：RRF-不是万能的，增益取决于-dense-的强弱" class="headerlink" title="洞察一：RRF 不是万能的，增益取决于 dense 的强弱"></a>洞察一：RRF 不是万能的，增益取决于 dense 的强弱</h3><p><strong>dense baseline 越弱、词面信号越重要，BM25+RRF 的增益越大</strong>；dense 已经很强时（SciFact），BM25 的词面噪声反而是负贡献，硬融进来会拉低排名。</p>
+<p>直觉解释：SciFact 是”判断一句科学 claim 对不对”，靠的是语义理解，关键词重叠未必意味着相关；nfcorpus 是医学检索，病名、药名这些专业术语的字面匹配本身就是强信号，BM25 正好用得上。</p>
+<h3 id="洞察二：rerank-始终稳健，是最可靠的增益来源"><a href="#洞察二：rerank-始终稳健，是最可靠的增益来源" class="headerlink" title="洞察二：rerank 始终稳健，是最可靠的增益来源"></a>洞察二：rerank 始终稳健，是最可靠的增益来源</h3><p>不管 dense 强弱，rerank 都涨。而且 <strong>dense 越弱，rerank 增益越大</strong>（SciFact +6.8% vs nfcorpus +25.7%）。因为 rerank 模型用 query 和每篇候选做精细的交叉注意力打分，能把 dense 漏排的好文档重新顶上来——候选池越”乱”，它越能捡漏。</p>
+<h3 id="实践建议"><a href="#实践建议" class="headerlink" title="实践建议"></a>实践建议</h3><ol>
+<li><strong>先看 dense baseline 强不强</strong>。跑一遍纯向量检索，看 nDCG&#x2F;Hit。</li>
+<li><strong>dense 已经很强</strong>（&gt;0.7）：别折腾 BM25+RRF，直接上 rerank 就行，省一层计算。</li>
+<li><strong>dense 偏弱</strong>（专业领域、术语多）：dense + BM25 RRF 再 rerank，三者叠加收益最大。</li>
+<li>**别迷信”混合检索一定更好”**。它是条件性的，关键变量是”你的 dense 检索够不够强”。</li>
+</ol>
+<hr>
+<h2 id="五、关于可信度：用权威库复现过"><a href="#五、关于可信度：用权威库复现过" class="headerlink" title="五、关于可信度：用权威库复现过"></a>五、关于可信度：用权威库复现过</h2><p>为了排除”是不是自己写的 RRF 或指标算错了”，这套实验同时跑了两个版本：手写的 RRF + 指标，和用 <code>ranx</code>（指标经 TREC Eval 验证的工业库）的版本。两者结果<strong>逐项几乎一致</strong>（Hit &#x2F; Recall &#x2F; nDCG 分毫不差，MRR 仅因定义差异——<code>mrr@10</code> 截断 vs 全列表——差不到 0.005）。所以”RRF 在 SciFact 上没用”不是实现 bug，是真实的数据特性。</p>
+<hr>
+<h2 id="结语"><a href="#结语" class="headerlink" title="结语"></a>结语</h2><p>这篇博客真正想传递的不是”哪个数据集赢了”，而是一个方法论：</p>
+<ul>
+<li><strong>评测前先懂指标</strong>——Hit &#x2F; MRR &#x2F; Recall &#x2F; nDCG 各有侧重，别只盯一个。</li>
+<li><strong>结论要跨条件验证</strong>——在两个特性相反的数据集上跑，比在一个数据集上跑十遍更有说服力。</li>
+<li><strong>混合检索是工具不是信仰</strong>——它的价值是有条件的，而 rerank 是那个几乎总值得加的层。</li>
+</ul>
+<p>代码和数据都在 <code>experiments/hybrid_retrieval/</code>，可复现。</p>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+

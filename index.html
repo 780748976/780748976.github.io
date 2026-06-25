@@ -61,13 +61,30 @@
   <div class="home-grid">
     <div class="post-list">
       <article class="post-card">
-  <a class="post-card-link" href="/2026/06/24/LightRAG-%E6%A3%80%E7%B4%A2%E9%93%BE%E8%B7%AF%E6%B7%B1%E5%BA%A6%E5%88%86%E6%9E%90-%E5%8D%9A%E5%AE%A2/">
+  <a class="post-card-link" href="/2026/06/25/%E6%B7%B7%E5%90%88%E6%A3%80%E7%B4%A2%E5%80%BC%E4%B8%8D%E5%80%BC%E5%BE%97-%E6%A3%80%E7%B4%A2%E6%8C%87%E6%A0%87%E4%B8%8E%E5%AF%B9%E7%85%A7%E5%AE%9E%E9%AA%8C-%E5%8D%9A%E5%AE%A2/">
     <div class="post-card-top">
       <span class="post-number">TRACK 01</span>
+      <span class="post-date">2026.06.25</span>
+    </div>
+    <h2>混合检索到底值不值得用？一份 dense / RRF / rerank 的对照实验</h2>
+    <p> “加了 BM25 和 rerank，检索效果一定更好吗？”——这句话在 RAG 项目里几乎成了默认假设。但跑一次正经的对照实验你会发现：有时候加了反而更差。 本文先用一个小例子把 Hit@K、MRR、Recall@K、nDCG 讲到能</p>
+    <div class="post-card-bottom">
+      <div class="tag-row">
+        
+      </div>
+      <span class="read-more">继续阅读 <b>→</b></span>
+    </div>
+  </a>
+</article>
+
+<article class="post-card">
+  <a class="post-card-link" href="/2026/06/24/LightRAG-%E6%A3%80%E7%B4%A2%E9%93%BE%E8%B7%AF%E6%B7%B1%E5%BA%A6%E5%88%86%E6%9E%90-%E5%8D%9A%E5%AE%A2/">
+    <div class="post-card-top">
+      <span class="post-number">TRACK 02</span>
       <span class="post-date">2026.06.24</span>
     </div>
     <h2>LightRAG 四条检索链路：local / global / hybrid / mix 一次讲透</h2>
-    <p>LightRAG 四条检索链路：local &amp;#x2F; global &amp;#x2F; hybrid &amp;#x2F; mix 一次讲透 假设你已经知道 LightRAG 在做”图增强的 RAG”，本文只聚焦检索链路本身：四种模式怎么走、to</p>
+    <p> 假设你已经知道 LightRAG 在做”图增强的 RAG”，本文只聚焦检索链路本身：四种模式怎么走、token 怎么砍、多路结果怎么合并排序、rerank 在哪一步起作用。 阅读前置：知道有”实体””关系””chunk”三种东西就够了</p>
     <div class="post-card-bottom">
       <div class="tag-row">
         
