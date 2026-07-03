@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>LightRAG 文档增删改三链路：插入 / 删除 / 更新一次讲透 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.03 · AFTER SCHOOL NOTES</p>
+        <h1>LightRAG 文档增删改三链路：插入 / 删除 / 更新一次讲透</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>上一篇我们聊了 LightRAG 怎么”查”。这篇聊另一面：文档怎么”存、删、改”。</p>
+<p>表面上看，文档不就是一段文本嘛，写入一个 KV 库不就完了？难就难在 LightRAG 是<strong>图增强的 RAG</strong>——你喂进去的一篇文档，会被拆成 chunk、抽成实体和关系、写进图和三个向量库、散落到七八张表里。删一个文档，绝不能简单 <code>remove(node)</code>，因为它贡献的实体可能被另外十个文档共享着。</p>
+<p>阅读前置：知道有”文档 doc””切片 chunk””实体 node””关系 edge”四种东西就够了。本文会用一个贯穿全文的例子讲清增删改全流程，并始终围绕一个核心数据结构：**<code>source_id</code>**。</p>
+</blockquote>
+<hr>
+<h2 id="一、先看清”增删改”难在哪"><a href="#一、先看清”增删改”难在哪" class="headerlink" title="一、先看清”增删改”难在哪"></a>一、先看清”增删改”难在哪</h2><p>普通 RAG 的文档就是 KV 里一行 <code>&#123;doc_id: text&#125;</code>，增删改三件事都是 O(1)。LightRAG 不行，一篇文档入库后会扩散到这么多地方：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">一篇文档入库后的&quot;分身&quot;</span><br><span class="line">├── full_docs           （整篇原文）</span><br><span class="line">├── text_chunks         （每个 chunk 的原文 + 元数据）</span><br><span class="line">├── chunks_vdb          （每个 chunk 的向量）</span><br><span class="line">├── doc_status          （文档状态机：pending→processing→processed）</span><br><span class="line">├── 知识图 KG            （实体节点 + 关系边）</span><br><span class="line">├── entities_vdb        （实体向量）</span><br><span class="line">├── relationships_vdb   （关系向量）</span><br><span class="line">├── entity_chunks       （实体 → 它出现在哪些 chunk，全量清单）</span><br><span class="line">├── relation_chunks     （关系 → 它出现在哪些 chunk，全量清单）</span><br><span class="line">├── full_entities       （文档 → 它贡献了哪些实体，崩溃恢复用）</span><br><span class="line">└── full_relations      （文档 → 它贡献了哪些关系，崩溃恢复用）</span><br></pre></td></tr></table></figure>
+
+<p>于是三件事各有一个核心难点：</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>难点</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>插入</strong></td>
+<td>同名实体怎么合并？</td>
+<td>不能覆盖，要去重 + LLM 重摘要；同一文档重复插要做幂等</td>
+</tr>
+<tr>
+<td><strong>删除</strong></td>
+<td>共享实体怎么删？</td>
+<td>实体被多个文档引用时，只能”减去我的贡献”，不能整个删</td>
+</tr>
+<tr>
+<td><strong>更新</strong></td>
+<td>改一小段怎么办？</td>
+<td>LightRAG <strong>没有 update API</strong>，就是”删旧 + 插新”，靠 LLM cache 把成本摊掉</td>
+</tr>
+</tbody></table>
+<p>贯穿全文的例子：</p>
+<blockquote>
+<p><strong>文档 A</strong>：讲 LightRAG，抽出实体 <code>LightRAG</code>、<code>GraphRAG</code>，关系 <code>LightRAG→GraphRAG</code><br><strong>文档 B</strong>：也提到 LightRAG，同样抽出实体 <code>LightRAG</code></p>
+<p>于是实体 <code>LightRAG</code> 的 <code>source_id</code> 是 <code>&quot;chunkA-001&lt;SEP&gt;chunkB-003&quot;</code>——两个文档共享。</p>
+<p>接下来：插入 B 时怎么和 A 合并？删掉 A 时 <code>LightRAG</code> 还能不能留？更新 A 是什么流程？这就是本文要回答的。</p>
+</blockquote>
+<hr>
+<h2 id="二、灵魂数据结构：source-id-与它的”真相源”"><a href="#二、灵魂数据结构：source-id-与它的”真相源”" class="headerlink" title="二、灵魂数据结构：source_id 与它的”真相源”"></a>二、灵魂数据结构：source_id 与它的”真相源”</h2><p>理解增删改，先盯死一个字段：**每个实体节点和关系边上都挂着一个 <code>source_id</code>**。</p>
+<h3 id="2-1-source-id-是什么"><a href="#2-1-source-id-是什么" class="headerlink" title="2.1 source_id 是什么"></a>2.1 source_id 是什么</h3><p><code>source_id</code> 是一个用 <code>&lt;SEP&gt;</code> 拼接的 chunk_id 列表，记录”这个实体&#x2F;关系是从哪些 chunk 抽出来的”：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 知识图里一个实体节点的完整字段（operate.py:2516-2524）</span></span><br><span class="line">node = &#123;</span><br><span class="line">    <span class="string">&quot;entity_id&quot;</span>:   <span class="string">&quot;LightRAG&quot;</span>,</span><br><span class="line">    <span class="string">&quot;entity_type&quot;</span>: <span class="string">&quot;框架&quot;</span>,</span><br><span class="line">    <span class="string">&quot;description&quot;</span>: <span class="string">&quot;基于图的RAG框架，借鉴GraphRAG...&quot;</span>,   <span class="comment"># 可能是 LLM 合并后的单段</span></span><br><span class="line">    <span class="string">&quot;source_id&quot;</span>:   <span class="string">&quot;chunkA-001&lt;SEP&gt;chunkB-003&quot;</span>,          <span class="comment"># ← 出处指纹</span></span><br><span class="line">    <span class="string">&quot;file_path&quot;</span>:   <span class="string">&quot;docA.pdf&lt;SEP&gt;docB.pdf&quot;</span>,              <span class="comment"># 同样 &lt;SEP&gt; 拼接</span></span><br><span class="line">    <span class="string">&quot;created_at&quot;</span>:  <span class="string">&quot;2026-08-06T...&quot;</span>,</span><br><span class="line">    <span class="string">&quot;weight&quot;</span>:      <span class="number">2</span>,</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>关系边同理：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 一条关系边（operate.py:2044-2056）</span></span><br><span class="line">edge = &#123;</span><br><span class="line">    <span class="string">&quot;source&quot;</span>:    <span class="string">&quot;LightRAG&quot;</span>, <span class="string">&quot;target&quot;</span>: <span class="string">&quot;GraphRAG&quot;</span>,</span><br><span class="line">    <span class="string">&quot;weight&quot;</span>:    <span class="number">5.0</span>,                    <span class="comment"># 各 chunk 贡献的 weight 之和</span></span><br><span class="line">    <span class="string">&quot;description&quot;</span>: <span class="string">&quot;LightRAG 借鉴了 GraphRAG 的思想&quot;</span>,</span><br><span class="line">    <span class="string">&quot;keywords&quot;</span>:  <span class="string">&quot;借鉴,框架&quot;</span>,</span><br><span class="line">    <span class="string">&quot;source_id&quot;</span>: <span class="string">&quot;chunkA-002&lt;SEP&gt;chunkA-007&quot;</span>,</span><br><span class="line">    <span class="string">&quot;file_path&quot;</span>: <span class="string">&quot;docA.pdf&quot;</span>,</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><code>&lt;SEP&gt;</code> 是常量 <code>GRAPH_FIELD_SEP = &quot;&lt;SEP&gt;&quot;</code>（<code>constants.py:49</code>）。读取时 <code>source_id.split(&quot;&lt;SEP&gt;&quot;)</code> 还原成列表。</p>
+<h3 id="2-2-为什么-source-id-是删改的命门"><a href="#2-2-为什么-source-id-是删改的命门" class="headerlink" title="2.2 为什么 source_id 是删改的命门"></a>2.2 为什么 source_id 是删改的命门</h3><p>删除文档 A 时，怎么知道实体 <code>LightRAG</code> 还能不能留？</p>
+<blockquote>
+<p>把 A 的 chunk_id（<code>chunkA-001</code>）从 <code>LightRAG.source_id</code> 里扣掉，剩 <code>chunkB-003</code>——<strong>还有剩就留着，空了才整个删</strong>。</p>
+</blockquote>
+<p>这就是删除的全部核心逻辑，纯字符串集合差，<strong>不调 LLM</strong>。</p>
+<h3 id="2-3-但是：图上的-source-id-会被截断！"><a href="#2-3-但是：图上的-source-id-会被截断！" class="headerlink" title="2.3 但是：图上的 source_id 会被截断！"></a>2.3 但是：图上的 source_id 会被截断！</h3><p>这里有个坑：图节点上的 <code>source_id</code> 字段会按 <code>max_source_ids_per_entity</code> 截断（KEEP 保头 &#x2F; FIFO 保尾，<code>operate.py:2318</code>）。如果一个实体被 1000 个 chunk 引用，图上只存前 N 个。</p>
+<p>所以 LightRAG 另外维护了一张 <strong><code>entity_chunks</code> KV 表，存不被截断的全量清单</strong>：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># entity_chunks 表（lightrag.py:1393-1397）——不被截断的真相源</span></span><br><span class="line">&#123;</span><br><span class="line">    <span class="string">&quot;LightRAG&quot;</span>: &#123;</span><br><span class="line">        <span class="string">&quot;chunk_ids&quot;</span>: [<span class="string">&quot;chunkA-001&quot;</span>, <span class="string">&quot;chunkB-003&quot;</span>, <span class="string">&quot;chunkC-005&quot;</span>, ...],  <span class="comment"># 全量</span></span><br><span class="line">        <span class="string">&quot;count&quot;</span>: <span class="number">37</span>,</span><br><span class="line">        <span class="string">&quot;updated_at&quot;</span>: <span class="string">&quot;...&quot;</span></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>删除时<strong>优先从 <code>entity_chunks</code> 拿全量清单</strong>做减法，图上的 <code>source_id</code> 只当备份（<code>lightrag.py:4968</code>）。关系同理，有 <code>relation_chunks</code> 表，key 是 <code>make_relation_chunk_key(src, tgt)</code>——把两端名字排序后拼起来，保证 <code>A→B</code> 和 <code>B→A</code> 命中同一行。</p>
+<p>记住这条主线，后面所有删改逻辑都是围绕它转的。</p>
+<hr>
+<h2 id="三、插入链路：从一段文本到散落七八张表"><a href="#三、插入链路：从一段文本到散落七八张表" class="headerlink" title="三、插入链路：从一段文本到散落七八张表"></a>三、插入链路：从一段文本到散落七八张表</h2><h3 id="3-1-全流程七步"><a href="#3-1-全流程七步" class="headerlink" title="3.1 全流程七步"></a>3.1 全流程七步</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">① enqueue        入队 + 文档级去重，写 full_docs / doc_status(pending)</span><br><span class="line">② 状态机调度     pending → parsing → processing</span><br><span class="line">③ chunking       按 token 滑窗切成 N 个 chunk，生成 chunk_id</span><br><span class="line">④ chunk 入库     并行写 chunks_vdb / text_chunks / doc_status(processing)</span><br><span class="line">⑤ 实体关系抽取   每个 chunk 调一次 LLM，抽实体和关系，每条带 source_id=chunk_id</span><br><span class="line">⑥ 图合并         同名实体去重 + LLM 重摘要，合并 source_id，写图 + 实体/关系向量库</span><br><span class="line">⑦ flush + 落态    先持久化全部 storage，再把 doc_status 置为 processed</span><br></pre></td></tr></table></figure>
+
+<p>入口有两个：REST <code>POST /documents/text</code>（<code>document_routes.py:5180</code>）和 SDK <code>LightRAG.ainsert</code>（<code>lightrag.py:1726</code>）。两者最终都汇入 <code>apipeline_enqueue_documents</code> + <code>apipeline_process_enqueue_documents</code>（<code>pipeline.py:604 / 1584</code>）。</p>
+<h3 id="3-2-第①步：入队与文档级去重"><a href="#3-2-第①步：入队与文档级去重" class="headerlink" title="3.2 第①步：入队与文档级去重"></a>3.2 第①步：入队与文档级去重</h3><p>文档一进来先做三层去重，防止重复插入污染图：</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>检查内容</th>
+<th>命中怎么办</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>入口</td>
+<td><code>file_source</code> 是否已存在（<code>document_routes.py:5231</code>）</td>
+<td>直接 409 拒绝，逼你先删</td>
+</tr>
+<tr>
+<td>batch 内</td>
+<td>同 <code>file_path</code> &#x2F; 同 <code>content_hash</code>（<code>pipeline.py:947</code>）</td>
+<td>标记 <code>duplicate_kind</code>，不重抽</td>
+</tr>
+<tr>
+<td>已存库</td>
+<td><code>doc_status.filter_keys</code>（<code>pipeline.py:1118</code>）</td>
+<td>记一条 <code>dup-</code> 前缀的 FAILED 行，可被 track_id 追踪，但不覆盖原 doc</td>
+</tr>
+</tbody></table>
+<p>关键设计：<strong>重复插入不静默吞掉，而是显式记一条 FAILED</strong>，这样调用方能知道”我插了但被拒了”。</p>
+<p>去重读和 upsert 之间用 <code>enqueue_serialize_lock</code> 串行化（<code>pipeline.py:1097</code>），防止两个并发请求同时 miss dedup。</p>
+<h3 id="3-3-第③步：切片与-chunk-id-生成"><a href="#3-3-第③步：切片与-chunk-id-生成" class="headerlink" title="3.3 第③步：切片与 chunk_id 生成"></a>3.3 第③步：切片与 chunk_id 生成</h3><p>默认按 token 滑窗切（<code>chunker/token_size.py:130</code>）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">tokens = tokenizer.encode(content)</span><br><span class="line">step = chunk_token_size - chunk_overlap_token_size   # 步长</span><br><span class="line">for start in range(0, len(tokens), step):</span><br><span class="line">    end = min(start + chunk_token_size, len(tokens))</span><br><span class="line">    chunk = tokenizer.decode(tokens[start:end])</span><br></pre></td></tr></table></figure>
+
+<p>切出来的 chunk 结构（<code>TextChunkSchema</code>，<code>base.py:79</code>）：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">&#123;</span><br><span class="line">    <span class="string">&quot;tokens&quot;</span>: <span class="number">512</span>,</span><br><span class="line">    <span class="string">&quot;content&quot;</span>: <span class="string">&quot;LightRAG 是一个基于图的RAG框架...&quot;</span>,</span><br><span class="line">    <span class="string">&quot;full_doc_id&quot;</span>: <span class="string">&quot;doc-abc123&quot;</span>,       <span class="comment"># 所属文档</span></span><br><span class="line">    <span class="string">&quot;chunk_order_index&quot;</span>: <span class="number">0</span>,            <span class="comment"># 在文档里的序号</span></span><br><span class="line">    <span class="comment"># 实际还会附 file_path / llm_cache_list / heading 等</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>chunk_id 怎么生成</strong>（<code>utils_pipeline.py:152</code>）有三种策略，优先级从上到下：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> chunking_result 提供了 raw_chunk_id:</span><br><span class="line">    chunk_id = <span class="string">f&quot;<span class="subst">&#123;doc_id&#125;</span>-<span class="subst">&#123;raw_chunk_id&#125;</span>&quot;</span></span><br><span class="line"><span class="keyword">elif</span> 有 chunk_order_index:</span><br><span class="line">    chunk_id = <span class="string">f&quot;<span class="subst">&#123;doc_id&#125;</span>-chunk-<span class="subst">&#123;order:03d&#125;</span>&quot;</span>      <span class="comment"># ← 最常见：doc-abc123-chunk-001</span></span><br><span class="line"><span class="keyword">else</span>:</span><br><span class="line">    chunk_id = compute_mdhash_id(<span class="string">f&quot;<span class="subst">&#123;doc_id&#125;</span>:<span class="subst">&#123;content&#125;</span>&quot;</span>, prefix=<span class="string">&quot;chunk-&quot;</span>)</span><br></pre></td></tr></table></figure>
+
+<p>注意 chunk_id 形如 <code>doc-abc123-chunk-001</code>——<strong>前缀就是 doc_id</strong>，这是后面”chunk 反查 doc”的钥匙。</p>
+<h3 id="3-4-第⑤步：实体关系抽取，source-id-就在这里出生"><a href="#3-4-第⑤步：实体关系抽取，source-id-就在这里出生" class="headerlink" title="3.4 第⑤步：实体关系抽取，source_id 就在这里出生"></a>3.4 第⑤步：实体关系抽取，source_id 就在这里出生</h3><p>每个 chunk 调一次 LLM（带 <code>asyncio.Semaphore</code> 限流，<code>operate.py:3975</code>），用抽取 prompt 拿回实体和关系。**关键：每条抽出来的记录，<code>source_id</code> 直接赋值为当前 chunk 的 <code>chunk_key</code>**（<code>operate.py:662</code> 实体 &#x2F; <code>736</code> 关系）：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 一个 chunk 抽出的实体（operate.py:658-665）</span></span><br><span class="line">&#123;</span><br><span class="line">    <span class="string">&quot;entity_name&quot;</span>: <span class="string">&quot;LightRAG&quot;</span>,</span><br><span class="line">    <span class="string">&quot;entity_type&quot;</span>: <span class="string">&quot;框架&quot;</span>,</span><br><span class="line">    <span class="string">&quot;description&quot;</span>: <span class="string">&quot;基于图的RAG框架&quot;</span>,</span><br><span class="line">    <span class="string">&quot;source_id&quot;</span>: <span class="string">&quot;docA-chunk-001&quot;</span>,     <span class="comment"># ← 出生即带出处</span></span><br><span class="line">    <span class="string">&quot;file_path&quot;</span>: <span class="string">&quot;docA.pdf&quot;</span>,</span><br><span class="line">    <span class="string">&quot;timestamp&quot;</span>: <span class="string">&quot;...&quot;</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这就是 source_id 的”出生时刻”——它一开始就是单个 chunk_id，后面合并时才用 <code>&lt;SEP&gt;</code> 越拼越长。</p>
+<p>LLM 调用走 <code>use_llm_func_with_cache</code>，cache key 含 <code>chunk_id</code>（<code>operate.py:3753</code>）——<strong>同一个 chunk 重抽时直接命中 cache 跳过 LLM</strong>，这是后面”更新”能省钱的基础。</p>
+<h3 id="3-5-第⑥步：图合并——插入的核心难点"><a href="#3-5-第⑥步：图合并——插入的核心难点" class="headerlink" title="3.5 第⑥步：图合并——插入的核心难点"></a>3.5 第⑥步：图合并——插入的核心难点</h3><p>抽出来的实体可能和已存的重名（文档 B 的 <code>LightRAG</code> 和文档 A 的 <code>LightRAG</code>）。合并发生在 <code>_merge_nodes_then_upsert</code>（<code>operate.py:2229</code>），分几步：</p>
+<p><strong>a) 读旧值</strong>：<code>knowledge_graph.get_node(&quot;LightRAG&quot;)</code>，把旧的 <code>description</code> &#x2F; <code>source_id</code> &#x2F; <code>file_path</code> 按 <code>&lt;SEP&gt;</code> 拆开。</p>
+<p><strong>b) source_id 合并 + 写回真相源</strong>：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)</span><br><span class="line"><span class="comment"># [&quot;chunkA-001&quot;] + [&quot;chunkB-003&quot;] → [&quot;chunkA-001&quot;, &quot;chunkB-003&quot;]</span></span><br><span class="line">entity_chunks.upsert(&#123;<span class="string">&quot;LightRAG&quot;</span>: &#123;<span class="string">&quot;chunk_ids&quot;</span>: full_source_ids, <span class="string">&quot;count&quot;</span>: <span class="number">2</span>&#125;&#125;)  <span class="comment"># 写全量</span></span><br><span class="line">source_ids = apply_source_ids_limit(full_source_ids, max_source, method)         <span class="comment"># 截断给图用</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>c) description 去重 + LLM 重摘要</strong>（<code>operate.py:2394 / 2413</code>）：</p>
+<p>旧描述 <code>&quot;基于图的RAG框架&quot;</code> + 新描述 <code>&quot;一个RAG框架&quot;</code>，先用 <code>_combine_descriptions_dedup</code> 去重（防止重处理时 fragment 无限累积，issue #3367），再交给 <code>_handle_entity_relation_summary</code>——如果 fragment 少且 token 不超，直接 <code>&lt;SEP&gt;</code> 拼接；超了就用 LLM 总结成一段。</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 合并后写回图节点</span></span><br><span class="line">knowledge_graph.upsert_node(<span class="string">&quot;LightRAG&quot;</span>, &#123;</span><br><span class="line">    <span class="string">&quot;description&quot;</span>: <span class="string">&quot;基于图的RAG框架，融合知识图谱与向量检索...&quot;</span>,  <span class="comment"># LLM 摘要后的单段</span></span><br><span class="line">    <span class="string">&quot;source_id&quot;</span>:   <span class="string">&quot;chunkA-001&lt;SEP&gt;chunkB-003&quot;</span>,                   <span class="comment"># &lt;SEP&gt; 拼接</span></span><br><span class="line">    <span class="string">&quot;file_path&quot;</span>:   <span class="string">&quot;docA.pdf&lt;SEP&gt;docB.pdf&quot;</span>,</span><br><span class="line">    ...</span><br><span class="line">&#125;)</span><br></pre></td></tr></table></figure>
+
+<p><strong>d) 写实体向量库</strong>（<code>operate.py:2530</code>）：向量化的文本是 <code>f&quot;&#123;entity_name&#125;\n&#123;description&#125;&quot;</code>，id 是 <code>compute_mdhash_id(entity_name, prefix=&quot;ent-&quot;)</code>。</p>
+<p><strong>e) 跨进程锁</strong>：合并同一个实体时，用 <code>get_storage_keyed_lock([entity_name])</code>（<code>operate.py:3397</code>）保证并发安全——两个文档同时插入同名实体，不会互相覆盖。</p>
+<h3 id="3-6-第⑦步：先-flush-再落态，这个顺序不能反"><a href="#3-6-第⑦步：先-flush-再落态，这个顺序不能反" class="headerlink" title="3.6 第⑦步：先 flush 再落态，这个顺序不能反"></a>3.6 第⑦步：先 flush 再落态，这个顺序不能反</h3><p>最后一步有讲究（issue #3400）：**先把所有 storage flush 到磁盘，再把 doc_status 置为 <code>processed</code>**。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">✗ 错误顺序：先 processed → 再 flush</span><br><span class="line">   → 崩在中间：状态显示已处理，但数据没落盘 → 检索查不到 → zombie 文档</span><br><span class="line"></span><br><span class="line">✓ 正确顺序：先 flush 全部 storage → 再写 processed</span><br><span class="line">   → 崩在中间：最多是&quot;数据已落盘但状态还是 processing&quot;，下次 resume 重跑即可</span><br></pre></td></tr></table></figure>
+
+<p>这就是为什么 <code>pipeline.py:5304-5346</code> 严格先 <code>await self._insert_done()</code> 再 <code>_upsert_doc_status_transition(PROCESSED)</code>。</p>
+<h3 id="3-7-文档状态机"><a href="#3-7-文档状态机" class="headerlink" title="3.7 文档状态机"></a>3.7 文档状态机</h3><p>整个插入过程文档状态在变（<code>base.py:838</code>）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">PENDING → PARSING → ANALYZING(可选) → PROCESSING → PROCESSED | FAILED</span><br><span class="line"> 入队     解析原文    多模态VLM        实体抽取      成功       失败</span><br></pre></td></tr></table></figure>
+
+<p>状态记录在 <code>doc_status</code> 表，数据结构是 <code>DocProcessingStatus</code>（<code>base.py:853</code>）：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">@dataclass</span></span><br><span class="line"><span class="keyword">class</span> <span class="title class_">DocProcessingStatus</span>:</span><br><span class="line">    content_summary: <span class="built_in">str</span>        <span class="comment"># 前100字预览</span></span><br><span class="line">    content_length: <span class="built_in">int</span></span><br><span class="line">    file_path: <span class="built_in">str</span>              <span class="comment"># 规范化 basename</span></span><br><span class="line">    status: DocStatus</span><br><span class="line">    created_at: <span class="built_in">str</span>             <span class="comment"># ISO 时间戳</span></span><br><span class="line">    updated_at: <span class="built_in">str</span></span><br><span class="line">    track_id: <span class="built_in">str</span> | <span class="literal">None</span>        <span class="comment"># 调用方追踪用</span></span><br><span class="line">    chunks_count: <span class="built_in">int</span> | <span class="literal">None</span></span><br><span class="line">    chunks_list: <span class="built_in">list</span>[<span class="built_in">str</span>] | <span class="literal">None</span>    <span class="comment"># ← 该文档所有 chunk_id（删除时靠它）</span></span><br><span class="line">    error_msg: <span class="built_in">str</span> | <span class="literal">None</span></span><br><span class="line">    metadata: <span class="built_in">dict</span>               <span class="comment"># process_options / kg_write_state / kg_purge journal 等</span></span><br><span class="line">    content_hash: <span class="built_in">str</span> | <span class="literal">None</span>     <span class="comment"># MD5，重复检测用</span></span><br></pre></td></tr></table></figure>
+
+<p>注意 <code>chunks_list</code>——删除时第一步就是读它，拿到这个文档贡献的所有 chunk_id。</p>
+<hr>
+<h2 id="四、删除链路：共享实体的三态决策"><a href="#四、删除链路：共享实体的三态决策" class="headerlink" title="四、删除链路：共享实体的三态决策"></a>四、删除链路：共享实体的三态决策</h2><p>这是全文最微妙的部分。删文档 A，但 A 的实体 <code>LightRAG</code> 还被 B 用着，怎么办？</p>
+<h3 id="4-1-三态决策：不动-重建-整删"><a href="#4-1-三态决策：不动-重建-整删" class="headerlink" title="4.1 三态决策：不动 &#x2F; 重建 &#x2F; 整删"></a>4.1 三态决策：不动 &#x2F; 重建 &#x2F; 整删</h3><p>入口 <code>LightRAG.adelete_by_doc_id</code>（<code>lightrag.py:5265</code>），核心在 <code>_purge_kg_contributions</code>（<code>lightrag.py:4582</code>）。对文档 A 贡献的每个实体&#x2F;关系，做一个<strong>集合减法</strong>然后分三类：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># lightrag.py:4983-4997 的决策逻辑</span></span><br><span class="line">existing_sources = entity_chunks[<span class="string">&quot;LightRAG&quot;</span>].chunk_ids   <span class="comment"># [&quot;chunkA-001&quot;, &quot;chunkB-003&quot;]</span></span><br><span class="line">remaining_sources = subtract_source_ids(existing_sources, A的chunk_ids)</span><br><span class="line"><span class="comment"># = [&quot;chunkB-003&quot;]   ← 把 A 的 chunkA-001 扣掉</span></span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> <span class="keyword">not</span> remaining_sources:</span><br><span class="line">    <span class="comment"># 没剩了 → 整个删</span></span><br><span class="line">    entities_to_delete.add(<span class="string">&quot;LightRAG&quot;</span>)</span><br><span class="line"><span class="keyword">elif</span> remaining_sources != existing_sources:</span><br><span class="line">    <span class="comment"># 还有剩但变了 → 保留，但要重建（修 source_id / description / weight）</span></span><br><span class="line">    entities_to_rebuild[<span class="string">&quot;LightRAG&quot;</span>] = remaining_sources</span><br><span class="line"><span class="keyword">else</span>:</span><br><span class="line">    <span class="comment"># 没变化（A 没贡献这个实体）→ 不动</span></span><br><span class="line">    <span class="keyword">pass</span></span><br></pre></td></tr></table></figure>
+
+<p>代入我们的例子：</p>
+<table>
+<thead>
+<tr>
+<th>对象</th>
+<th>A 删除前 source_id</th>
+<th>扣掉 A 后</th>
+<th>决策</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>实体 <code>LightRAG</code></td>
+<td><code>chunkA-001&lt;SEP&gt;chunkB-003</code></td>
+<td><code>chunkB-003</code></td>
+<td><strong>重建</strong>（B 还在用）</td>
+</tr>
+<tr>
+<td>实体 <code>GraphRAG</code></td>
+<td><code>chunkA-002</code></td>
+<td>空</td>
+<td><strong>整删</strong>（只有 A 提过）</td>
+</tr>
+<tr>
+<td>关系 <code>LightRAG→GraphRAG</code></td>
+<td><code>chunkA-002</code></td>
+<td>空</td>
+<td><strong>整删</strong></td>
+</tr>
+<tr>
+<td>实体 <code>Neo4j</code></td>
+<td><code>chunkC-005</code></td>
+<td><code>chunkC-005</code></td>
+<td><strong>不动</strong>（A 没贡献）</td>
+</tr>
+</tbody></table>
+<p><code>subtract_source_ids</code>（<code>utils.py:5342</code>）就是个 list comprehension，<strong>纯字符串集合差，不调 LLM</strong>：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">subtract_source_ids</span>(<span class="params">source_ids, ids_to_remove</span>):</span><br><span class="line">    removal_set = <span class="built_in">set</span>(ids_to_remove)</span><br><span class="line">    <span class="keyword">return</span> [sid <span class="keyword">for</span> sid <span class="keyword">in</span> source_ids <span class="keyword">if</span> sid <span class="keyword">and</span> sid <span class="keyword">not</span> <span class="keyword">in</span> removal_set]</span><br></pre></td></tr></table></figure>
+
+<h3 id="4-2-“重建”到底重建什么"><a href="#4-2-“重建”到底重建什么" class="headerlink" title="4.2 “重建”到底重建什么"></a>4.2 “重建”到底重建什么</h3><p>对于 <code>entities_to_rebuild</code>（如 <code>LightRAG</code>），不能只改 source_id 了事——因为 <code>LightRAG</code> 的 description 当初是 A、B 两段合并 + LLM 摘要出来的，现在 A 没了，描述得重新基于 B 单独生成。</p>
+<p>这里调 <code>rebuild_knowledge_from_chunks</code>（<code>operate.py:995</code>），但<strong>关键设计：它从 LLM cache 里取 B chunk 当初的抽取结果，不重新调 LLM 抽取</strong>（docstring <code>operate.py:1010</code>）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">LightRAG 现在的 description = &quot;A和B合并后的摘要&quot;</span><br><span class="line">   ↓ 重建</span><br><span class="line">从 cache 取 chunkB-003 当初抽出的原始 description = &quot;一个RAG框架&quot;</span><br><span class="line">   ↓ 用 _handle_entity_relation_summary 重新摘要（带 cache）</span><br><span class="line">新 description = &quot;一个RAG框架&quot;（单个 fragment，可能直接用，无需 LLM）</span><br></pre></td></tr></table></figure>
+
+<p><strong>weight 衰减</strong>也是自然发生的（<code>operate.py:2018</code>）：weight 是各 chunk 贡献的 sum，重建时只遍历 <code>remaining_sources</code>，被删的 chunk 不参与 sum，weight 自动减小：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">weights = []</span><br><span class="line"><span class="keyword">for</span> rel_data <span class="keyword">in</span> all_relationship_data:    <span class="comment"># 只遍历剩余 chunk</span></span><br><span class="line">    <span class="keyword">if</span> rel_data.get(<span class="string">&quot;weight&quot;</span>):</span><br><span class="line">        weights.append(rel_data[<span class="string">&quot;weight&quot;</span>])</span><br><span class="line">weight = <span class="built_in">sum</span>(weights) <span class="keyword">if</span> weights <span class="keyword">else</span> current.get(<span class="string">&quot;weight&quot;</span>, <span class="number">1.0</span>)</span><br><span class="line"><span class="comment"># A 删了，A 贡献的 weight 自然不计入 → 这就是&quot;衰减&quot;</span></span><br></pre></td></tr></table></figure>
+
+<p>所以删除里 LLM 的角色很克制：</p>
+<table>
+<thead>
+<tr>
+<th>删除子步骤</th>
+<th>是否调 LLM</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>三态决策（集合减法）</td>
+<td>❌ 纯字符串</td>
+</tr>
+<tr>
+<td>weight 衰减</td>
+<td>❌ 纯数值 sum</td>
+</tr>
+<tr>
+<td>整删对象</td>
+<td>❌ 直接 remove</td>
+</tr>
+<tr>
+<td>重建共享对象的 description</td>
+<td>⚠️ 带缓存地调 summarize，cache 命中则零成本</td>
+</tr>
+</tbody></table>
+<h3 id="4-3-整删：连带残余边一起清"><a href="#4-3-整删：连带残余边一起清" class="headerlink" title="4.3 整删：连带残余边一起清"></a>4.3 整删：连带残余边一起清</h3><p>整删一个实体节点时，不能只 <code>remove_node</code>——还得先把它身上挂着的残余边一起删掉（<code>lightrag.py:5148</code>）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">要整删 GraphRAG：</span><br><span class="line">  1. 先找 GraphRAG 上所有残余边 [LightRAG→GraphRAG, GraphRAG→Neo4j]</span><br><span class="line">  2. 删这些边（图 + relationships_vdb + relation_chunks）</span><br><span class="line">  3. 再删 GraphRAG 节点（图 + entities_vdb + entity_chunks）</span><br></pre></td></tr></table></figure>
+
+<p>向量库按 id 删，id 构造规则和插入时一致：</p>
+<table>
+<thead>
+<tr>
+<th>向量库</th>
+<th>id 构造</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>chunks_vdb</code></td>
+<td>直接用 chunk_id</td>
+</tr>
+<tr>
+<td><code>entities_vdb</code></td>
+<td><code>compute_mdhash_id(entity_name, prefix=&quot;ent-&quot;)</code></td>
+</tr>
+<tr>
+<td><code>relationships_vdb</code></td>
+<td><code>compute_mdhash_id(src+tgt, prefix=&quot;rel-&quot;)</code>，正反向两个 id 都删（无向图）</td>
+</tr>
+</tbody></table>
+<h3 id="4-4-安全破坏序：先修图，后删肉"><a href="#4-4-安全破坏序：先修图，后删肉" class="headerlink" title="4.4 安全破坏序：先修图，后删肉"></a>4.4 安全破坏序：先修图，后删肉</h3><p>删除的执行顺序很讲究（issue #3400 重写的核心）。原则：<strong>图对象永远不能指向已删除的 chunk</strong>。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">① 先清图贡献（_purge_kg_contributions）</span><br><span class="line">   ├─ 修图节点/边（重建或整删）</span><br><span class="line">   ├─ 修向量库 entities_vdb / relationships_vdb</span><br><span class="line">   └─ 修 chunk-tracking entity_chunks / relation_chunks</span><br><span class="line">② 再删 chunk 本体</span><br><span class="line">   ├─ chunks_vdb.delete(chunk_ids)</span><br><span class="line">   └─ text_chunks.delete(chunk_ids)</span><br><span class="line">③ 再删恢复锚点 full_entities / full_relations</span><br><span class="line">④ 最后删 doc_status → full_docs</span><br></pre></td></tr></table></figure>
+
+<p>为什么是这个顺序？如果先删 chunk 再修图，中途崩溃会出现”图上的 <code>source_id</code> 指向一个已不存在的 chunk”——检索时反查原文会失败。先修图，图就永远是干净的。</p>
+<p>还有个小细节：<code>doc_status</code> 比 <code>full_docs</code> 先删（<code>lightrag.py:5764</code>）——如果 <code>full_docs.delete</code> 失败，retry 时找不到 doc_status 就把文档当已删，避免 zombie。</p>
+<h3 id="4-5-删除的状态机：可断点续跑"><a href="#4-5-删除的状态机：可断点续跑" class="headerlink" title="4.5 删除的状态机：可断点续跑"></a>4.5 删除的状态机：可断点续跑</h3><p>删除是个长流程（要重建多个共享实体），中途崩溃怎么办？LightRAG 在 <code>doc_status.metadata.kg_purge</code> 里写了个 journal，四阶段（<code>constants.py:317</code>）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">prepared            proof 校验完，还没删任何东西</span><br><span class="line">derived_committed   图/vdb/tracking 已清</span><br><span class="line">anchors_pending     chunk 已删，锚点待删</span><br><span class="line">completed           锚点已删，等收尾</span><br></pre></td></tr></table></figure>
+
+<p>每完成一阶段才写下一阶段；retry 时 <code>phase_at_least</code> 跳过已完成阶段。这让删除<strong>幂等且可恢复</strong>——崩了重试不会重复删、不会漏删。</p>
+<h3 id="4-6-并发互斥"><a href="#4-6-并发互斥" class="headerlink" title="4.6 并发互斥"></a>4.6 并发互斥</h3><p>删除会抢 pipeline 的 <code>busy</code> 槽（<code>lightrag.py:5345</code>）：</p>
+<ul>
+<li>单文档删除：<code>job_name = &quot;Single document deletion&quot;</code></li>
+<li>批量删除：<code>job_name</code> 以 <code>&quot;deleting&quot;</code> 开头，可以 join 队列</li>
+<li>其它写操作（插入）在 busy 时直接 403</li>
+</ul>
+<p>这样删除和插入不会同时跑，避免”我正在删 A，你又在插 A”的乱局。</p>
+<hr>
+<h2 id="五、更新链路：删旧-插新，靠-cache-伪装增量"><a href="#五、更新链路：删旧-插新，靠-cache-伪装增量" class="headerlink" title="五、更新链路：删旧 + 插新，靠 cache 伪装增量"></a>五、更新链路：删旧 + 插新，靠 cache 伪装增量</h2><h3 id="5-1-LightRAG-没有-update-API"><a href="#5-1-LightRAG-没有-update-API" class="headerlink" title="5.1 LightRAG 没有 update API"></a>5.1 LightRAG 没有 update API</h3><p>这是首先要澄清的：**LightRAG 没有显式的 <code>aupdate_by_doc_id</code>**。文档级”更新”在产品层就是两步走：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">① DELETE /documents/delete_document   删旧</span><br><span class="line">② POST  /documents/text               用新内容重插</span><br></pre></td></tr></table></figure>
+
+<p>硬证据在 <code>document_routes.py:5234</code>——如果 <code>file_source</code> 已存在，直接 409 拒绝重插，detail 里写：”Delete the existing record before re-inserting.”</p>
+<p>那改一小段怎么办？答案是：<strong>全量重切 chunk + 全量重抽实体</strong>，没有 chunk diff。</p>
+<h3 id="5-2-为什么”删旧-插新”没想象中贵"><a href="#5-2-为什么”删旧-插新”没想象中贵" class="headerlink" title="5.2 为什么”删旧+插新”没想象中贵"></a>5.2 为什么”删旧+插新”没想象中贵</h3><p>全量重抽听起来很贵，但有两个机制把成本摊掉：</p>
+<p><strong>机制一：LLM response cache 命中</strong></p>
+<p>重插时 chunk_id 形如 <code>doc-xxx-chunk-001</code>——<strong>只要 chunk 内容没变，chunk_id 就一样</strong>（内容 hash 决定），LLM cache key 也一样。于是：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">原文档 100 个 chunk，你只改了第 5 个</span><br><span class="line">重插时：</span><br><span class="line">  chunk 1-4, 6-100：内容没变 → chunk_id 不变 → cache 命中 → 跳过 LLM</span><br><span class="line">  chunk 5：内容变了 → cache miss → 真正调 LLM 抽取</span><br></pre></td></tr></table></figure>
+
+<p>所以”改一小段”的实际 LLM 成本 ≈ 只抽那一个 chunk。</p>
+<p><strong>机制二：删除时默认保留 LLM cache</strong></p>
+<p><code>adelete_by_doc_id</code> 有个参数 <code>delete_llm_cache</code>，<strong>默认 false</strong>（<code>lightrag.py:5548</code>）。也就是说删文档时 LLM cache 不清，重插时能命中。</p>
+<blockquote>
+<p>这就是 LightRAG 把”删旧+插新”伪装成”增量更新”的核心优化点：<strong>用 LLM cache 把全量重抽的实际成本降到接近增量</strong>。</p>
+</blockquote>
+<h3 id="5-3-唯一的”细粒度”机制：custom-chunks-追加"><a href="#5-3-唯一的”细粒度”机制：custom-chunks-追加" class="headerlink" title="5.3 唯一的”细粒度”机制：custom chunks 追加"></a>5.3 唯一的”细粒度”机制：custom chunks 追加</h3><p>如果真要增量，有 <code>ainsert_custom_chunks</code>（<code>lightrag.py:1810</code>，issue #3400 Phase 3）的 patch 模式：对已 PROCESSED 的文档可以<strong>追加</strong> chunks 而非重建。</p>
+<p>但注意限制：<strong>只能追加，不能修改、不能删除单个 chunk</strong>。所以它适合”给文档补一段”的场景，不适合”改一段”。</p>
+<h3 id="5-4-实体描述的合并：插入走合并，删除走重建"><a href="#5-4-实体描述的合并：插入走合并，删除走重建" class="headerlink" title="5.4 实体描述的合并：插入走合并，删除走重建"></a>5.4 实体描述的合并：插入走合并，删除走重建</h3><p>更新涉及”删了再插”，所以实体描述会被处理两次，走两条不同的路：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>路径</th>
+<th>LLM 调用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>插入时遇到同名实体</td>
+<td><code>_combine_descriptions_dedup</code> 去重 + <code>_handle_entity_relation_summary</code> 合并</td>
+<td>fragment 少则不调，多则带 cache 调</td>
+</tr>
+<tr>
+<td>删除时共享实体要重建</td>
+<td><code>rebuild_knowledge_from_chunks</code> 从 cache 取剩余 chunk 原始描述</td>
+<td>带缓存调 summarize，命中则零成本</td>
+</tr>
+</tbody></table>
+<p>两条路都靠 <code>_combine_descriptions_dedup</code>（<code>operate.py:2184</code>）保证 fragment 不重复累积——这是 issue #3367 的修复点，防止反复 reprocess 同一文档让 description 越滚越长。</p>
+<h3 id="5-5-手工编辑知识图（不是文档编辑）"><a href="#5-5-手工编辑知识图（不是文档编辑）" class="headerlink" title="5.5 手工编辑知识图（不是文档编辑）"></a>5.5 手工编辑知识图（不是文档编辑）</h3><p>顺带一提，LightRAG 有 <code>aedit_entity</code> &#x2F; <code>aedit_relation</code> &#x2F; <code>acreate_entity</code> &#x2F; <code>amerge_entities</code>（<code>lightrag.py:6200+</code>，实现在 <code>utils_graph.py</code>）。但这是<strong>手工编辑图节点本身</strong>（比如修正一个实体的 type、合并两个重复实体），跟”文档内容更新触发自动重抽”是两回事。它们绕过 pipeline busy 检查，直接改图。</p>
+<hr>
+<h2 id="六、三链路对比总表"><a href="#六、三链路对比总表" class="headerlink" title="六、三链路对比总表"></a>六、三链路对比总表</h2><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>插入</th>
+<th>删除</th>
+<th>更新</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>入口</strong></td>
+<td><code>ainsert</code> &#x2F; <code>POST /text</code></td>
+<td><code>adelete_by_doc_id</code> &#x2F; <code>DELETE</code></td>
+<td>无显式 API &#x3D; 删 + 插</td>
+</tr>
+<tr>
+<td><strong>核心难点</strong></td>
+<td>同名实体合并</td>
+<td>共享实体不误删</td>
+<td>成本控制</td>
+</tr>
+<tr>
+<td><strong>关键数据结构</strong></td>
+<td><code>source_id</code> 出生 + 合并</td>
+<td><code>source_id</code> 减法 + <code>entity_chunks</code> 真相源</td>
+<td>LLM cache key &#x3D; chunk_id</td>
+</tr>
+<tr>
+<td><strong>LLM 角色</strong></td>
+<td>抽实体 + 摘要合并</td>
+<td>仅重建共享对象时带 cache 调 summarize</td>
+<td>重抽未变 chunk 命中 cache 跳过</td>
+</tr>
+<tr>
+<td><strong>状态机</strong></td>
+<td><code>pending→processing→processed</code></td>
+<td><code>kg_purge</code> 四阶段 journal</td>
+<td>复用前两者</td>
+</tr>
+<tr>
+<td><strong>并发控制</strong></td>
+<td>per-entity keyed lock</td>
+<td>pipeline busy + per-entity lock</td>
+<td>复用前两者</td>
+</tr>
+<tr>
+<td><strong>幂等保证</strong></td>
+<td>三层去重 + LLM cache</td>
+<td>journal 断点续跑 + recovery anchor</td>
+<td>LLM cache 命中</td>
+</tr>
+<tr>
+<td><strong>flush 顺序</strong></td>
+<td>先 flush 再 processed</td>
+<td>先修图后删肉</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>失败可恢复</strong></td>
+<td><code>kg_write_state</code> + recovery anchor</td>
+<td><code>kg_purge</code> journal 阶段跳过</td>
+<td>重试即重插</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="七、灵魂总结：source-id-串起一切"><a href="#七、灵魂总结：source-id-串起一切" class="headerlink" title="七、灵魂总结：source_id 串起一切"></a>七、灵魂总结：source_id 串起一切</h2><p>回到开头的问题——增删改到底在干什么？一句话：</p>
+<blockquote>
+<p><strong>增删改本质上都是在维护 <code>source_id</code> 这个”出处指纹”，让它永远准确反映”每个实体&#x2F;关系还活在哪些 chunk 上”。</strong></p>
+</blockquote>
+<ul>
+<li><strong>插入</strong>：source_id 出生（&#x3D;chunk_id），合并时 <code>&lt;SEP&gt;</code> 越拼越长，去重防止 description 累积</li>
+<li><strong>删除</strong>：source_id 做集合减法，剩多少决定”重建&#x2F;整删&#x2F;不动”，图上 source_id 永远指向活着的 chunk</li>
+<li><strong>更新</strong>：删旧（减法）+ 插新（出生），中间靠 LLM cache（key&#x3D;chunk_id）把全量重抽摊成增量</li>
+</ul>
+<p>而 <code>entity_chunks</code> KV 表作为不被截断的”真相源”，是删除时判断共享关系的命门——图上的 source_id 可能被截断骗你，但 <code>entity_chunks</code> 永远存全量。</p>
+<p>三个排序依据也值得记牢：</p>
+<table>
+<thead>
+<tr>
+<th>链路</th>
+<th>“顺序”的灵魂</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>插入 flush</td>
+<td>先落盘再置 processed——避免”已处理但没数据”的 zombie</td>
+</tr>
+<tr>
+<td>删除执行</td>
+<td>先修图后删肉——图对象永不指向已删 chunk</td>
+</tr>
+<tr>
+<td>更新成本</td>
+<td>LLM cache key &#x3D; chunk_id——内容不变则不调 LLM，全量重抽≈增量</td>
+</tr>
+</tbody></table>
+<p>理解了 source_id 和它背后的真相源，LightRAG 的增删改就不再是一团乱麻——它们都是同一根线串起来的：<strong>让出处始终可追溯、让共享始终被尊重、让崩溃始终可恢复。</strong></p>
+<hr>
+<h2 id="附：关键代码位置速查"><a href="#附：关键代码位置速查" class="headerlink" title="附：关键代码位置速查"></a>附：关键代码位置速查</h2><table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>位置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GRAPH_FIELD_SEP = &quot;&lt;SEP&gt;&quot;</code></td>
+<td><code>constants.py:49</code></td>
+</tr>
+<tr>
+<td><code>DocStatus</code> 状态枚举</td>
+<td><code>base.py:838</code></td>
+</tr>
+<tr>
+<td><code>DocProcessingStatus</code> 数据结构</td>
+<td><code>base.py:853</code></td>
+</tr>
+<tr>
+<td><code>TextChunkSchema</code></td>
+<td><code>base.py:79</code></td>
+</tr>
+<tr>
+<td>插入入口 <code>ainsert</code></td>
+<td><code>lightrag.py:1726</code></td>
+</tr>
+<tr>
+<td>chunk_id 生成</td>
+<td><code>utils_pipeline.py:152</code></td>
+</tr>
+<tr>
+<td>chunk 切片 <code>chunking_by_token_size</code></td>
+<td><code>chunker/token_size.py:130</code></td>
+</tr>
+<tr>
+<td>实体抽取 <code>extract_entities</code></td>
+<td><code>operate.py:3578</code></td>
+</tr>
+<tr>
+<td>source_id 出生</td>
+<td><code>operate.py:662</code>（实体）&#x2F; <code>736</code>（关系）</td>
+</tr>
+<tr>
+<td>图合并 <code>_merge_nodes_then_upsert</code></td>
+<td><code>operate.py:2229</code></td>
+</tr>
+<tr>
+<td>description 去重 <code>_combine_descriptions_dedup</code></td>
+<td><code>operate.py:2184</code></td>
+</tr>
+<tr>
+<td>source_id 截断 <code>apply_source_ids_limit</code></td>
+<td><code>operate.py:2318</code></td>
+</tr>
+<tr>
+<td>删除入口 <code>adelete_by_doc_id</code></td>
+<td><code>lightrag.py:5265</code></td>
+</tr>
+<tr>
+<td>删除核心 <code>_purge_kg_contributions</code></td>
+<td><code>lightrag.py:4582</code></td>
+</tr>
+<tr>
+<td>三态决策</td>
+<td><code>lightrag.py:4983</code></td>
+</tr>
+<tr>
+<td>source_id 减法 <code>subtract_source_ids</code></td>
+<td><code>utils.py:5342</code></td>
+</tr>
+<tr>
+<td>重建 <code>rebuild_knowledge_from_chunks</code></td>
+<td><code>operate.py:995</code></td>
+</tr>
+<tr>
+<td>kg_purge 四阶段 journal</td>
+<td><code>constants.py:317</code></td>
+</tr>
+<tr>
+<td>重复插入拒绝（409）</td>
+<td><code>document_routes.py:5234</code></td>
+</tr>
+<tr>
+<td>custom chunks 追加 <code>ainsert_custom_chunks</code></td>
+<td><code>lightrag.py:1810</code></td>
+</tr>
+</tbody></table>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+
