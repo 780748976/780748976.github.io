@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>GraphRAG vs LightRAG：从社区报告到双轨检索的对决 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.06 · AFTER SCHOOL NOTES</p>
+        <h1>GraphRAG vs LightRAG：从社区报告到双轨检索的对决</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>上一篇我们拆了 LightRAG 的”查”和”存删改”。这篇换个视角：把 LightRAG 放回它诞生的坐标系里，和它的直接前辈 <strong>GraphRAG（微软，2024）</strong> 做一次彻底的底层对比。</p>
+<p>一句话版本：<strong>GraphRAG 用”离线预生成社区报告 + 在线 map-reduce”回答全局问题，token 贵、建图慢、更新重；LightRAG 把社区摘要这一层彻底砍掉，改成”在线双路检索 + 统一重排”，换来增量更新和近乎一个数量级的 token 节省——代价是牺牲了 GraphRAG 最强的”全局综合能力”。</strong></p>
+<p>阅读前置：建议先读过本站的《LightRAG 四条检索链路》《LightRAG 文档增删改三链路》——那两篇是本文的”另一半”。本文会大量引用它们里面的结构，但把 GraphRAG 作为对照系重新组织，不重复啰嗦。</p>
+</blockquote>
+<hr>
+<h2 id="一、先看设计哲学的分岔点"><a href="#一、先看设计哲学的分岔点" class="headerlink" title="一、先看设计哲学的分岔点"></a>一、先看设计哲学的分岔点</h2><p>两个系统要解决的问题是一样的：<strong>给 LLM 喂的检索上下文，怎么从”一堆散落的 chunk”升级成”有结构的、跨文档的知识”？</strong></p>
+<p>但两家走了完全相反的两条路：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">GraphRAG（微软，2024）</span><br><span class="line">  &quot;先建好城市模型，再回答任何问题&quot;</span><br><span class="line">  索引期：实体图 → Leiden 层次社区 → 每个社区预生成报告（离线，一次性的重）</span><br><span class="line">  查询期：局部问题走实体局部检索；全局问题走全量社区报告 map-reduce（在线，每次的重）</span><br><span class="line"></span><br><span class="line">LightRAG（HKU，2024）</span><br><span class="line">  &quot;不建城市模型，每次问路时现查地图&quot;</span><br><span class="line">  索引期：实体图 + 关系图（离线，相对轻）</span><br><span class="line">  查询期：双路（低层/高层关键词）并发检索 + 多源 chunk 合并 + rerank（在线，每次都轻）</span><br></pre></td></tr></table></figure>
+
+<p>一句话概括哲学差异：</p>
+<blockquote>
+<p><strong>GraphRAG 把”理解语料”的活提前干完（离线重），查询时直接消费预计算结果；LightRAG 把”理解语料”的活推迟到查询时现算（在线轻），用更聪明的检索来补偿。</strong></p>
+</blockquote>
+<p>这个分岔衍生出三组底层差异，本文依次拆：<strong>① 图怎么建</strong>（索引期）、<strong>② 查询怎么走</strong>（检索期）、<strong>③ 更新怎么维护</strong>（生命周期）。</p>
+<hr>
+<h2 id="二、索引期对比：一张图-vs-三份料"><a href="#二、索引期对比：一张图-vs-三份料" class="headerlink" title="二、索引期对比：一张图 vs 三份料"></a>二、索引期对比：一张图 vs 三份料</h2><h3 id="2-1-GraphRAG：从图到社区，再到”社区报告”"><a href="#2-1-GraphRAG：从图到社区，再到”社区报告”" class="headerlink" title="2.1 GraphRAG：从图到社区，再到”社区报告”"></a>2.1 GraphRAG：从图到社区，再到”社区报告”</h3><p>GraphRAG 的索引流水线（官方数据流图）比 LightRAG 多了整整两个重阶段：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">① chunking → TextUnits          （文档切块，类似 LightRAG 的 chunk）</span><br><span class="line">② 实体/关系/声明抽取            （每块调 LLM 抽实体、关系、covariates 声明）</span><br><span class="line">③ 图构建                        （实体=节点、关系=边，合并同名实体）</span><br><span class="line">④ 层次社区检测（Leiden 递归）   ★ LightRAG 没有</span><br><span class="line">⑤ 社区报告生成（每社区调 LLM）  ★ LightRAG 没有</span><br><span class="line">⑥ 实体描述向量化                （供局部搜索语义召回）</span><br></pre></td></tr></table></figure>
+
+<p><strong>第④步：Leiden 层次社区检测。</strong> 在实体关系图上递归跑 Leiden 算法做社区聚类，直到每个社区的规模低于阈值。结果是一棵<strong>层次社区树</strong>：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">整个语料</span><br><span class="line">├── 社区 C1（level 0，最粗）          ← 覆盖最大主题</span><br><span class="line">│   ├── 子社区 C1-1（level 1）</span><br><span class="line">│   │   ├── 实体 A、实体 B            ← 叶子是原始实体</span><br><span class="line">│   │   └── 实体 C</span><br><span class="line">│   └── 子社区 C1-2</span><br><span class="line">└── 社区 C2</span><br></pre></td></tr></table></figure>
+
+<p>层级越深越具体、越浅越宏观。这棵树是 GraphRAG 回答”全局问题”的底气——<strong>它在索引期就把”语料里有哪些主题群”这件事给算出来了</strong>。</p>
+<p><strong>第⑤步：社区报告（community report）。</strong> 对<strong>每个社区</strong>（不止叶子）调一次 LLM，把该社区内所有实体的描述、关系、声明压缩成一篇摘要，包含社区主题、关键实体、关键关系、重要声明等字段。这份报告在索引期就固定下来，查询期直接复用。</p>
+<blockquote>
+<p><strong>这一步是 GraphRAG token 贵的第一来源</strong>：社区的个数 &#x3D; 调 LLM 的次数，而且报告本身要读社区内全部实体&#x2F;关系，每次摘要的输入 token 也很大。官方对小说语料建索引的 token 成本常是语料本身的几十倍量级（取决于重叠与重试）。</p>
+</blockquote>
+<h3 id="2-2-LightRAG：只有一张图，没有社区"><a href="#2-2-LightRAG：只有一张图，没有社区" class="headerlink" title="2.2 LightRAG：只有一张图，没有社区"></a>2.2 LightRAG：只有一张图，没有社区</h3><p>LightRAG 的索引流水线（上篇《增删改》已拆过）只有：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">① chunking                    （token 滑窗，512 token）</span><br><span class="line">② 实体/关系抽取               （每 chunk 调 LLM，带 cache）</span><br><span class="line">③ 图合并                      （同名实体去重 + LLM 重摘要 + source_id 拼接）</span><br><span class="line">④ 三份向量化                  （chunk 向量 / 实体向量 / 关系向量）</span><br></pre></td></tr></table></figure>
+
+<p><strong>没有社区检测、没有报告生成</strong>。LightRAG 认为：社区报告是”提前把图给总结掉了”，这一总结不仅贵，还<strong>不可增量</strong>——新增一篇文档，社区结构会变，报告要重新生成一大片。</p>
+<h3 id="2-3-索引期成本对比"><a href="#2-3-索引期成本对比" class="headerlink" title="2.3 索引期成本对比"></a>2.3 索引期成本对比</h3><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>GraphRAG</th>
+<th>LightRAG</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LLM 调用次数</td>
+<td>抽取 + <strong>每社区一次摘要</strong>（社区可到数百上千）</td>
+<td>抽取 + 合并时少数 summarize</td>
+</tr>
+<tr>
+<td>抽取粒度</td>
+<td>每 TextUnit 抽实体&#x2F;关系&#x2F;<strong>声明</strong></td>
+<td>每 chunk 抽实体&#x2F;关系</td>
+</tr>
+<tr>
+<td>向量库</td>
+<td>实体描述一个</td>
+<td>chunk &#x2F; 实体 &#x2F; 关系三个</td>
+</tr>
+<tr>
+<td>图结构</td>
+<td>实体图 + <strong>社区树 + 报告表</strong></td>
+<td>实体图（含关系边）</td>
+</tr>
+<tr>
+<td>增量友好度</td>
+<td>差（社区要重算重摘要）</td>
+<td>好（见第五节）</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="三、查询期对比：map-reduce-全量扫描-vs-双路在线检索"><a href="#三、查询期对比：map-reduce-全量扫描-vs-双路在线检索" class="headerlink" title="三、查询期对比：map-reduce 全量扫描 vs 双路在线检索"></a>三、查询期对比：map-reduce 全量扫描 vs 双路在线检索</h2><p>这是两家的核心分水岭，也是”底层原理”最值得掰开的地方。</p>
+<h3 id="3-1-GraphRAG-的两种搜索"><a href="#3-1-GraphRAG-的两种搜索" class="headerlink" title="3.1 GraphRAG 的两种搜索"></a>3.1 GraphRAG 的两种搜索</h3><p>GraphRAG 查询分两档，各回答一类问题：</p>
+<p><strong>Local Search（局部搜索）——回答”具体问题”：</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">query embedding</span><br><span class="line">  → 实体向量库召回 top-k 相关实体（fuzzy matching 实体名）</span><br><span class="line">  → 以这些实体为锚点，图里取一跳邻居实体 + 邻居关系</span><br><span class="line">  → 同时取这些实体所属社区的报告（一份）</span><br><span class="line">  → 取这些实体关联的 TextUnit（原文 chunk）</span><br><span class="line">  → 按 token 预算混合排序 → LLM</span><br></pre></td></tr></table></figure>
+
+<p>Local Search 的上下文由四部分按比例拼成：<strong>TextUnit + 关系 + 实体 + 社区报告</strong>（默认 <code>text_unit_prop=0.5, community_prop=0.1</code>，即一半原文 chunk、一成社区报告）。这和 LightRAG local 模式几乎同构——锚定实体、展开邻居、反查原文。<strong>注意：LightRAG 的 local&#x2F;global 模式基本是 GraphRAG Local Search 的简化版</strong>。</p>
+<p><strong>Global Search（全局搜索）——回答”宏观综合问题”：</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">整个语料的所有社区报告（取某一层级，默认 level 0 最粗）</span><br><span class="line">  → MAP 阶段：报告切成小段，逐段送 LLM，各生成&quot;部分回答 + 重要性评分&quot;</span><br><span class="line">  → 按评分过滤/排序部分回答</span><br><span class="line">  → REDUCE 阶段：把保留的部分回答拼起来，再一次 LLM 生成最终答案</span><br></pre></td></tr></table></figure>
+
+<p>关键点：**Global Search 的输入不是”检索出来的”东西，而是”索引期就生成好的全部社区报告”**。它不做向量检索——它在 map-reduce 所有报告。所以：</p>
+<blockquote>
+<ul>
+<li>回答”这堆文档里主要讲了哪几个主题””整体趋势是什么”这类<strong>要纵观全库</strong>的问题，GraphRAG 是碾压级的，LightRAG 基本答不好。</li>
+<li>但每次 Global Search 都要把<strong>全量报告</strong>过一遍 LLM，token 成本随语料规模线性涨——这是 GraphRAG token 贵的第二来源（在线侧）。</li>
+</ul>
+</blockquote>
+<h3 id="3-2-LightRAG：把”全局”降级为”高层关键词检索”"><a href="#3-2-LightRAG：把”全局”降级为”高层关键词检索”" class="headerlink" title="3.2 LightRAG：把”全局”降级为”高层关键词检索”"></a>3.2 LightRAG：把”全局”降级为”高层关键词检索”</h3><p>LightRAG 没有社区，怎么回答”全局问题”？答案是<strong>不真全局，用关键词分层假装全局</strong>：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">用户问题：&quot;这个领域这两年有什么趋势？&quot;</span><br><span class="line">  → LLM 抽出高层关键词（hl）：[&quot;技术趋势&quot;, &quot;领域发展&quot;]</span><br><span class="line">  → hl 去关系向量库 relationships_vdb 召回&quot;主题级&quot;关系</span><br><span class="line">  → 关系反查实体 + 反查 chunk</span><br><span class="line">  → 进统一的 process_chunks 流水线（rerank / 过滤 / 截断）</span><br></pre></td></tr></table></figure>
+
+<p>（细节见《LightRAG 四条检索链路》第 2.2 节。）</p>
+<p>LightRAG 的”global”和 GraphRAG 的”global”<strong>根本不是一回事</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GraphRAG Global</th>
+<th>LightRAG global</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>检索信号</td>
+<td>全部社区报告（预先总结）</td>
+<td>高层关键词（LLM 现抽）</td>
+</tr>
+<tr>
+<td>覆盖范围</td>
+<td>全语料（报告覆盖所有社区）</td>
+<td>top-k 关系（≈40 条）</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>随语料规模线性涨</td>
+<td>固定 token 预算</td>
+</tr>
+<tr>
+<td>能答”全库主题”吗</td>
+<td>能，设计目标</td>
+<td>弱，只覆盖被抽成关系的那部分</td>
+</tr>
+</tbody></table>
+<p><strong>LightRAG 用”关键词分层”这一个廉价机制，替代了 GraphRAG 用”社区报告全量扫描”实现的全局能力</strong>——代价是真正的全局综合（跨全库归纳）做不了，收益是查询成本几乎与语料规模无关。</p>
+<h3 id="3-3-检索管道的结构对比"><a href="#3-3-检索管道的结构对比" class="headerlink" title="3.3 检索管道的结构对比"></a>3.3 检索管道的结构对比</h3><p>把两家查询期的管道并排画：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">GraphRAG Local:</span><br><span class="line">  query → 实体向量召回 → 邻居展开 → &#123;TextUnit, 关系, 实体, 社区报告&#125; 混拼 → LLM</span><br><span class="line"></span><br><span class="line">GraphRAG Global:</span><br><span class="line">  query → 全部社区报告 → MAP(报告分段→部分回答+评分) → 过滤 → REDUCE(拼起来→最终答案)</span><br><span class="line"></span><br><span class="line">LightRAG local / global / hybrid / mix:</span><br><span class="line">  query → LLM抽 ll/hl 关键词 → 实体/关系向量库双路召回</span><br><span class="line">       → token 截断 → chunk 反查合并 → rerank → 动态预算裁剪 → LLM</span><br></pre></td></tr></table></figure>
+
+<p>同构点很明显：<strong>LightRAG 的 local &#x3D; GraphRAG Local Search 去掉社区报告</strong>（community_prop 置零）；<strong>LightRAG 的 global &#x3D; GraphRAG Global Search 去掉全量扫描，换成 top-k</strong>。而 LightRAG 的 hybrid&#x2F;mix（双路 + rerank）是 GraphRAG 没有的增量设计——它用”多路召回 + 独立 rerank 模型统一排序”来补偿缺失的社区报告。</p>
+<h3 id="3-4-token-成本的账：一次查询谁更贵"><a href="#3-4-token-成本的账：一次查询谁更贵" class="headerlink" title="3.4 token 成本的账：一次查询谁更贵"></a>3.4 token 成本的账：一次查询谁更贵</h3><p>假设 1000 个文档、抽出了 8000 个实体、社区检测后 level 0 有 200 个社区报告：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">GraphRAG Global Search（回答&quot;全库主题&quot;）:</span><br><span class="line">  输入 = 200 份报告 ≈ 假设 150 token/报告 = 30,000 token</span><br><span class="line">  MAP 阶段还要分段各调一次 LLM + REDUCE 一次</span><br><span class="line">  → 单次查询总成本：数万 token + 数十次 LLM 调用</span><br><span class="line"></span><br><span class="line">LightRAG hybrid（回答同样的问题）:</span><br><span class="line">  输入 = 截断后的实体(6000t) + 关系(8000t) + chunk(动态预算, 上限约 21k)</span><br><span class="line">  → 单次查询总成本：固定 ≤ 30,000 token，1 次 LLM 调用</span><br></pre></td></tr></table></figure>
+
+<p>注意两边口径不同：GraphRAG 是”<strong>为回答全局问题，把全量预总结都读一遍</strong>“，LightRAG 是”<strong>用固定预算精选 top-k</strong>“。GraphRAG 的答案更全面（官方论文的核心卖点就是 comprehensiveness&#x2F;diversity），LightRAG 更便宜更可控。</p>
+<hr>
+<h2 id="四、检索质量的底层逻辑：预总结-vs-在线重排"><a href="#四、检索质量的底层逻辑：预总结-vs-在线重排" class="headerlink" title="四、检索质量的底层逻辑：预总结 vs 在线重排"></a>四、检索质量的底层逻辑：预总结 vs 在线重排</h2><p>两家对”为什么检索结果靠谱”给出了不同的答案，这是最深的原理分歧：</p>
+<h3 id="4-1-GraphRAG-的答案：离线预总结-把”全局相关性”提前固化"><a href="#4-1-GraphRAG-的答案：离线预总结-把”全局相关性”提前固化" class="headerlink" title="4.1 GraphRAG 的答案：离线预总结 &#x3D; 把”全局相关性”提前固化"></a>4.1 GraphRAG 的答案：<strong>离线预总结 &#x3D; 把”全局相关性”提前固化</strong></h3><p>GraphRAG 认为，跨文档的宏观知识（”A 与 B 公司的关系” “整个行业的格局”）<strong>分散在大量 chunk 里，靠在线检索拼不齐</strong>。所以它在索引期就把这些宏观知识浓缩进社区报告——<strong>相关性在离线就判定完了，查询期只是搬运</strong>。</p>
+<ul>
+<li>优点：全局问题答得全、答得有结构</li>
+<li>缺点：① 报告生成贵；② <strong>报告里的知识是”当时的语料”快照</strong>，语料一更新，报告可能过时；③ 报告是 LLM 二次压缩，有信息损失（细节丢失在摘要里）</li>
+</ul>
+<h3 id="4-2-LightRAG-的答案：在线双路检索-rerank-把”局部相关性”现算现用"><a href="#4-2-LightRAG-的答案：在线双路检索-rerank-把”局部相关性”现算现用" class="headerlink" title="4.2 LightRAG 的答案：在线双路检索 + rerank &#x3D; 把”局部相关性”现算现用"></a>4.2 LightRAG 的答案：<strong>在线双路检索 + rerank &#x3D; 把”局部相关性”现算现用</strong></h3><p>LightRAG 认为，与其提前总结（贵、不可增量、有过时风险），不如<strong>查询时多路召回（实体路 + 关系路 + 纯向量路）、用独立 rerank 模型在统一相关性维度上现排</strong>：</p>
+<ul>
+<li>优点：① 索引便宜；② 增量友好；③ rerank 的”相关性判断”基于<strong>当前 query</strong>，比离线报告”针对语料”的判断更贴合具体问题</li>
+<li>缺点：**没有”全库视角”**——rerank 再准，也只在 top-k 候选里准；候选池外的东西（比如没被抽成实体、又不在 top-k chunk 里的宏观结论）永远进不来</li>
+</ul>
+<h3 id="4-3-一句话总结质量差异"><a href="#4-3-一句话总结质量差异" class="headerlink" title="4.3 一句话总结质量差异"></a>4.3 一句话总结质量差异</h3><blockquote>
+<p><strong>GraphRAG 的强项是”广度”（全库综合），LightRAG 的强项是”准度”（局部精检）。</strong> GraphRAG 牺牲了增量性和成本换广度，LightRAG 牺牲了广度换增量性和成本。两者不是谁替代谁，是同一个目标的两个极端解。</p>
+</blockquote>
+<hr>
+<h2 id="五、更新链路对比：全量重建-vs-删旧插新"><a href="#五、更新链路对比：全量重建-vs-删旧插新" class="headerlink" title="五、更新链路对比：全量重建 vs 删旧插新"></a>五、更新链路对比：全量重建 vs 删旧插新</h2><p>这是选型时最实际的一刀。</p>
+<h3 id="5-1-GraphRAG：增量更新-部分重建，社区报告是老大难"><a href="#5-1-GraphRAG：增量更新-部分重建，社区报告是老大难" class="headerlink" title="5.1 GraphRAG：增量更新&#x3D;部分重建，社区报告是老大难"></a>5.1 GraphRAG：增量更新&#x3D;部分重建，社区报告是老大难</h3><p>GraphRAG 官方提供 incremental index：只对<strong>新增文档（按 title 去重）</strong>重跑抽取，然后跑 8 个 update-merge workflow 把增量合并进原索引，其中包括 <code>update_communities</code> 和 <code>update_community_reports</code>。</p>
+<p>但有两个硬伤（官方文档也承认）：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">① 增量检测只看 title，不看内容</span><br><span class="line">   同 title 但内容改了 → get_delta_docs 检测不到 → 不重索引（官方明说的核心局限）</span><br><span class="line"></span><br><span class="line">② 新增文档会改变图结构 → 社区划分会变 → 受影响社区的【报告要重新生成】</span><br><span class="line">   报告重生成 = 又一轮离线重活，且&quot;哪些社区受影响&quot;很难精确界定</span><br><span class="line">   → 工程上经常被迫&quot;全量重建&quot;</span><br></pre></td></tr></table></figure>
+
+<p>所以 GraphRAG 的实际更新体验：<strong>小改 &#x3D; 大重建</strong>。</p>
+<h3 id="5-2-LightRAG：删旧插新-LLM-cache-伪装增量"><a href="#5-2-LightRAG：删旧插新-LLM-cache-伪装增量" class="headerlink" title="5.2 LightRAG：删旧插新 + LLM cache 伪装增量"></a>5.2 LightRAG：删旧插新 + LLM cache 伪装增量</h3><p>LightRAG 的更新（上篇《增删改》已拆透）核心是：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">改文档 = 删旧（source_id 集合减法 → 三态决策：不动/重建/整删）</span><br><span class="line">       + 插新（全量重切 chunk + 重抽实体，但……）</span><br><span class="line">          └─ LLM cache key = chunk_id，内容没变的 chunk 直接命中 cache 跳过 LLM</span><br><span class="line">          └─ 实际 LLM 成本 ≈ 只抽真正改动的那几个 chunk</span><br></pre></td></tr></table></figure>
+
+<p><strong>关键差异</strong>：LightRAG 没有”社区”这一层，更新时只需要维护实体&#x2F;关系&#x2F;source_id，<strong>不存在”报告重生成”这种波及面不可控的步骤</strong>——更新成本与改动量成正比，而不是与语料规模成正比。</p>
+<h3 id="5-3-更新对比总表"><a href="#5-3-更新对比总表" class="headerlink" title="5.3 更新对比总表"></a>5.3 更新对比总表</h3><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>GraphRAG</th>
+<th>LightRAG</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>增量检测</td>
+<td>title 比对（内容变更检测不到）</td>
+<td>file_source 去重 + content_hash</td>
+</tr>
+<tr>
+<td>改动内容怎么办</td>
+<td>重跑该文档抽取 + 社区报告重生成</td>
+<td>删旧插新，cache 命中跳过</td>
+</tr>
+<tr>
+<td>更新波及面</td>
+<td>社区级（不可控）</td>
+<td>实体级（source_id 减法精确到点）</td>
+</tr>
+<tr>
+<td>小改动成本</td>
+<td>≈ 大重建</td>
+<td>≈ 只重抽改动的 chunk</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="六、总对比表"><a href="#六、总对比表" class="headerlink" title="六、总对比表"></a>六、总对比表</h2><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>GraphRAG</th>
+<th>LightRAG</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>提出者 &#x2F; 时间</td>
+<td>微软 &#x2F; 2024.04</td>
+<td>HKU &#x2F; 2024.10</td>
+</tr>
+<tr>
+<td>核心思想</td>
+<td>离线建社区报告，查询消费预总结</td>
+<td>在线双路检索，查询现算现排</td>
+</tr>
+<tr>
+<td>索引期 LLM 开销</td>
+<td>抽取 + <strong>每社区报告</strong>（贵）</td>
+<td>抽取 + 少量合并摘要（轻）</td>
+</tr>
+<tr>
+<td>图结构</td>
+<td>实体图 + 层次社区树 + 报告</td>
+<td>实体图（含关系边）</td>
+</tr>
+<tr>
+<td>向量库</td>
+<td>实体描述（1 个）</td>
+<td>chunk &#x2F; 实体 &#x2F; 关系（3 个）</td>
+</tr>
+<tr>
+<td>局部查询</td>
+<td>Local Search（实体锚点 + 邻居 + 报告 + TextUnit）</td>
+<td>local &#x2F; hybrid &#x2F; mix（实体&#x2F;关系&#x2F;纯向量路）</td>
+</tr>
+<tr>
+<td>全局查询</td>
+<td>Global Search（<strong>全量报告 map-reduce</strong>）</td>
+<td>global（<strong>高层关键词 top-k 关系</strong>）</td>
+</tr>
+<tr>
+<td>查询 token</td>
+<td>全局查询随语料线性涨</td>
+<td>固定 ≤ 30k 预算</td>
+</tr>
+<tr>
+<td>重排机制</td>
+<td>无独立 rerank（报告已预总结）</td>
+<td>Stage 4 独立 rerank 模型统一重排</td>
+</tr>
+<tr>
+<td>全局综合能力</td>
+<td>★★★ 强</td>
+<td>★☆ 弱</td>
+</tr>
+<tr>
+<td>局部精检能力</td>
+<td>★★★</td>
+<td>★★★（rerank 加持）</td>
+</tr>
+<tr>
+<td>增量更新</td>
+<td>社区报告重生成，工程上≈重建</td>
+<td>删旧插新 + cache，成本≈增量</td>
+</tr>
+<tr>
+<td>上手复杂度</td>
+<td>高（Azure + 多步流水线）</td>
+<td>低（pip install + 三行代码）</td>
+</tr>
+<tr>
+<td>适合场景</td>
+<td>全库综述、行业报告、语料稳定</td>
+<td>知识库问答、语料高频更新、成本敏感</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="七、怎么选：一张决策表"><a href="#七、怎么选：一张决策表" class="headerlink" title="七、怎么选：一张决策表"></a>七、怎么选：一张决策表</h2><p>不是”谁更好”，是”你的约束在哪边”：</p>
+<table>
+<thead>
+<tr>
+<th>你的情况</th>
+<th>推荐</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>要答”整个语料讲什么、有哪些主题、趋势如何”</td>
+<td><strong>GraphRAG</strong></td>
+<td>这正是社区报告 + 全局搜索的设计目标</td>
+</tr>
+<tr>
+<td>语料经常增删改，想要增量更新</td>
+<td><strong>LightRAG</strong></td>
+<td>无社区层，更新成本与改动量成正比</td>
+</tr>
+<tr>
+<td>token 成本敏感（自掏腰包 &#x2F; 大语料）</td>
+<td><strong>LightRAG</strong></td>
+<td>查询固定预算，索引期也便宜得多</td>
+</tr>
+<tr>
+<td>语料不大且基本不变，但问题宏观</td>
+<td><strong>GraphRAG</strong></td>
+<td>贵一次（索引）换每次查询的全面</td>
+</tr>
+<tr>
+<td>知识库问答、要引用、要 rerank 精排</td>
+<td><strong>LightRAG</strong></td>
+<td>四模式 + 统一 rerank 流水线更顺手</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>实践中还有一个混合派：<strong>用 GraphRAG 的社区报告喂全局问题，用 LightRAG 式的实体路喂局部问题</strong>——很多生产系统（包括官方后来出的 DRIFT Search，本质是”局部搜索 + 社区信息补广度”）都是在朝这个方向收敛。理解了本文的底层原理，你就能看懂这些”缝合方案”各自缝的是哪一块。</p>
+</blockquote>
+<hr>
+<h2 id="八、灵魂总结"><a href="#八、灵魂总结" class="headerlink" title="八、灵魂总结"></a>八、灵魂总结</h2><p>回到开头那句话，用一张图收束全文：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">GraphRAG:  索引期&quot;重理解&quot;（图→社区→报告）  查询期&quot;消费&quot;（全量 map-reduce）</span><br><span class="line">           哲学：把全局相关性提前固化，贵在前期</span><br><span class="line"></span><br><span class="line">LightRAG:  索引期&quot;轻理解&quot;（图而已）         查询期&quot;现算&quot;（双路检索+rerank）</span><br><span class="line">           哲学：把相关性判断推迟到每次查询，贵在灵活</span><br></pre></td></tr></table></figure>
+
+<p>三个记忆锚点：</p>
+<ol>
+<li><strong>社区报告是 GraphRAG 的一切</strong>——它既是全局能力的来源，也是 token 贵、更新难的根源；LightRAG 砍掉它，等于同时砍掉了”全局能力”和”历史包袱”。</li>
+<li>**GraphRAG 的 global 是”全量预总结扫描”，LightRAG 的 global 是”关键词 top-k 检索”**——同名不同物，别再被名字骗了。</li>
+<li><strong>选择 &#x3D; 在”广度 &#x2F; 增量 &#x2F; 成本”三个约束里取两个</strong>：GraphRAG 取广度和准度丢增量，LightRAG 取增量和成本丢广度。</li>
+</ol>
+<hr>
+<h2 id="附：官方资料与关键默认值速查"><a href="#附：官方资料与关键默认值速查" class="headerlink" title="附：官方资料与关键默认值速查"></a>附：官方资料与关键默认值速查</h2><table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>位置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GraphRAG 官方文档</td>
+<td><code>microsoft.github.io/graphrag</code></td>
+</tr>
+<tr>
+<td>GraphRAG 论文</td>
+<td>arXiv:2404.16130（”From Local to Global”）</td>
+</tr>
+<tr>
+<td>Leiden 层次社区检测</td>
+<td>GraphRAG <code>index/default_dataflow</code> Phase 4</td>
+</tr>
+<tr>
+<td>Local Search 默认比例</td>
+<td><code>text_unit_prop=0.5, community_prop=0.1</code></td>
+</tr>
+<tr>
+<td>Global Search 流程</td>
+<td>报告分段 → MAP 部分回答+评分 → REDUCE 聚合</td>
+</tr>
+<tr>
+<td>DRIFT Search</td>
+<td>局部搜索 + 社区信息补广度的混合检索</td>
+</tr>
+<tr>
+<td>LightRAG 仓库</td>
+<td><code>HKUDS/LightRAG</code></td>
+</tr>
+<tr>
+<td>LightRAG 四检索模式</td>
+<td>见本站《LightRAG 四条检索链路》</td>
+</tr>
+<tr>
+<td>LightRAG 增删改</td>
+<td>见本站《LightRAG 文档增删改三链路》</td>
+</tr>
+<tr>
+<td>LightRAG token 预算</td>
+<td><code>DEFAULT_MAX_TOTAL_TOKENS=30000</code>（<code>constants.py</code>）</td>
+</tr>
+</tbody></table>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+
