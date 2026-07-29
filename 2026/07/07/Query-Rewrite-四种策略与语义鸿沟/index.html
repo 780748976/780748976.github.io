@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>Query Rewrite 四种策略：改写 / HyDE / Step-back / 多 Query | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.07 · AFTER SCHOOL NOTES</p>
+        <h1>Query Rewrite 四种策略：改写 / HyDE / Step-back / 多 Query</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>RAG 检索效果不好，很多人第一反应是换 Embedding 模型、调 chunk 大小——但其实很多时候问题出在最前面：<strong>用户怎么问的</strong>。用户说「这东西坏了咋整」，知识库写的是「产品故障排查与维修指南」，两句话意思明明一样，向量检索就是召不回正确文档。为什么？</p>
+<p>因为<strong>口语表达和书面文档在向量空间里根本不是邻居</strong>。Query Rewrite 就是在检索之前，先对用户问题做加工，让它的向量坐标离正确文档更近——相当于出发前先校准导航，目的地不变，但路线更准。</p>
+<p>一句话版本：<strong>Query Rewrite 的本质是弥合「用户提问」和「文档表述」之间的语义鸿沟，而这道鸿沟有四种形态——口语化用「直接改写」、文体差异用「HyDE」、问题太具体用「Step-back」、角度单一用「多 Query 扩展」。</strong></p>
+</blockquote>
+<hr>
+<h2 id="一、先建立一个坐标系：为什么「意思一样」却召不回"><a href="#一、先建立一个坐标系：为什么「意思一样」却召不回" class="headerlink" title="一、先建立一个坐标系：为什么「意思一样」却召不回"></a>一、先建立一个坐标系：为什么「意思一样」却召不回</h2><p>要理解四种方法，先搞懂一个问题：<strong>为什么语义相关的两句话，向量相似度可能低到召不回来？</strong></p>
+<p>因为向量空间里，文本不是按”意思”分布的，而是按<strong>「表述方式」</strong>分布的。用户提问和知识库文档之间，隔着几道天然的鸿沟：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">用户：「这东西坏了咋整」         ← 口语、短句、省略主语</span><br><span class="line">文档：「产品故障排查与维修指南」   ← 书面、名词化、完整结构</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><strong>口语 vs 书面</strong>：「咋整」和「维修指南」，语义相近，向量坐标相距甚远</li>
+<li><strong>问句 vs 陈述句</strong>：问题是疑问句（「退款政策是什么」），文档是陈述句（「申请售后退款须知」），两类文体天然有坐标距离</li>
+<li><strong>具体 vs 抽象</strong>：用户问「ef 参数设 100 合适吗」，文档讲「HNSW 参数调优原则」，粒度对不上</li>
+<li><strong>单一 vs 多维</strong>：用户只从一个角度问，但答案涉及多个维度</li>
+</ul>
+<p>Query Rewrite 的四种方法，本质上就是<strong>针对这四道鸿沟的四套加工方案</strong>——不是”改得更规范”这一件事，而是先判断鸿沟的形态，再选对应的加工方式。这是理解 Query Rewrite 的关键。</p>
+<hr>
+<h2 id="二、鸿沟①：口语化表达-→-直接改写（Query-Rewriting）"><a href="#二、鸿沟①：口语化表达-→-直接改写（Query-Rewriting）" class="headerlink" title="二、鸿沟①：口语化表达 → 直接改写（Query Rewriting）"></a>二、鸿沟①：口语化表达 → 直接改写（Query Rewriting）</h2><p><strong>最基础的一种</strong>。把口语化、模糊的问题改写成更精准、更书面化的检索表述。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">原始：「上次说的那个退款的事，流程是啥」</span><br><span class="line">改写：「申请商品退款的完整操作流程是什么」</span><br></pre></td></tr></table></figure>
+
+<p>改写的本质，是把口语的向量坐标<strong>拉近到文档的向量坐标</strong>——「咋退」和「申请退款的操作流程」不是同一个邻居，改写就是让前者的向量向后者靠拢。</p>
+<p>除了口语化，它还顺手解决两类问题：</p>
+<ul>
+<li><strong>补全指代</strong>：「这个功能怎么用」→ 具体功能名称，让多轮对话里的模糊引用变成检索可识别的词汇</li>
+<li><strong>保留核心意图</strong>：去掉口头禅、寒暄，只留下检索需要的语义载荷</li>
+</ul>
+<p>发给 LLM 的 Prompt 模板：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">请将用户的问题改写成更适合知识库检索的表述。</span><br><span class="line">要求：去掉口语化表达、补全缩写和指代、使用更正式的书面语、保留核心意图。</span><br><span class="line"></span><br><span class="line">对话历史：&#123;最近几轮对话&#125;</span><br><span class="line">用户问题：&#123;原始问题&#125;</span><br><span class="line"></span><br><span class="line">只输出改写后的问题，不要解释。</span><br></pre></td></tr></table></figure>
+
+<p><strong>适用场景</strong>：多轮对话场景——上下文多、指代多、口语化严重。</p>
+<p>但直接改写只能解决口语化。<strong>还有一道鸿沟是改写搞不定的</strong>：问题和文档本来就是不同的文体——一个是疑问句，一个是陈述句。就算你把问题改写得再规范，它在向量空间里还是「问句」的坐标，文档是「陈述句」的坐标，两类文体之间天然有距离。这道鸿沟催生了 HyDE。</p>
+<hr>
+<h2 id="三、鸿沟②：文体差异-→-HyDE（假设文档嵌入）"><a href="#三、鸿沟②：文体差异-→-HyDE（假设文档嵌入）" class="headerlink" title="三、鸿沟②：文体差异 → HyDE（假设文档嵌入）"></a>三、鸿沟②：文体差异 → HyDE（假设文档嵌入）</h2><p>先理解一个向量空间里的经验规律：</p>
+<blockquote>
+<p><strong>答案到答案的距离，比问题到答案的距离近得多。</strong></p>
+</blockquote>
+<p>一份文档的向量坐标是「陈述句」形态。用户的问题是「疑问句」形态。哪怕语义完全相同，问句坐标和文档坐标之间也隔着一层文体距离。那怎么让检索的起点落在「陈述句」坐标上？<strong>HyDE 的思路非常巧妙：先让 LLM 生成一段假设答案，用假设答案的向量去检索文档。</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">① 原始问题：「退款政策是什么」            ← 问句坐标</span><br><span class="line">② LLM 生成假设答案：「用户可在购买后 14</span><br><span class="line">   天内申请退款，需提供订单号……」        ← 陈述句坐标，风格像文档</span><br><span class="line">③ 用假设答案的向量去检索文档              ← 起点直接落在文档的坐标系里</span><br></pre></td></tr></table></figure>
+
+<p>很多人第一次听到会觉得多此一举：让 LLM 生成一个<strong>可能不准确</strong>的答案，再用它去检索，这不是自己骗自己吗？</p>
+<p>关键在于：<strong>假设答案不需要准确，只需要「风格像文档」就够了。</strong> 它的作用不是回答问题，而是<strong>扮演文档的角色</strong>——充当一个向量上更好的「检索代理」。原始问题的坐标离文档远，假设答案的坐标离文档近，用后者检索命中率高得多。</p>
+<p>生成假设答案的 Prompt 模板：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">请根据以下问题，生成一段可能的答案。</span><br><span class="line">注意：不需要完全准确，只需要用于辅助检索，风格尽量像知识库文档。</span><br><span class="line"></span><br><span class="line">问题：&#123;用户问题&#125;</span><br><span class="line">假设答案：</span><br></pre></td></tr></table></figure>
+
+<p><strong>适用场景</strong>：专业知识库、文体差异明显的场景——用户的问法和文档的写法属于”两个世界”时，HyDE 是把检索起点搬进文档世界的桥。</p>
+<p>HyDE 解决了文体差异，但还有一类情况它和直接改写都处理不好：<strong>用户的问题太具体了，知识库里压根没有直接对应的答案，只有相关的背景原理文档</strong>。这就要请出 Step-back。</p>
+<hr>
+<h2 id="四、鸿沟③：问题太具体-→-Step-back-Prompting（后退提问）"><a href="#四、鸿沟③：问题太具体-→-Step-back-Prompting（后退提问）" class="headerlink" title="四、鸿沟③：问题太具体 → Step-back Prompting（后退提问）"></a>四、鸿沟③：问题太具体 → Step-back Prompting（后退提问）</h2><p>有些问题问的是具体细节，但知识库里没有直接答案，只有支撑它的背景知识。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">具体问题：「Qdrant 的 HNSW ef 参数设多少合适？」</span><br><span class="line">后台知识：「HNSW 索引的参数调优原则是什么」   ← 知识库里有的是这个</span><br></pre></td></tr></table></figure>
+
+<p>直接拿具体问题去检索，命中不了背景文档。Step-back 的做法是：<strong>把具体问题「后退一步」，提升到更抽象的层次，先检索背景知识，再结合背景知识回答具体问题。</strong></p>
+<p>类比一下就很直观：就像你做一道数学题，不是一上来就硬套公式，而是先想想「这道题用的是哪种定理」，再用定理解题。知识库里没有「ef 参数设 100 是否合适」的直接答案，但一定有「HNSW 参数调优原则」这样的背景文档——把具体问题后退成背景问题，才能找到真正有用的参考资料。</p>
+<p>生成「后退版本」的 Prompt 模板：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">请将以下具体问题转化为一个更通用的背景问题，用于检索相关背景知识。</span><br><span class="line"></span><br><span class="line">具体问题：&#123;原始问题&#125;</span><br><span class="line">背景问题：</span><br></pre></td></tr></table></figure>
+
+<p><strong>适用场景</strong>：技术文档、需要原理支撑的场景——用户问的是”做法”，答案藏在”原理”里。</p>
+<p>前面三种方法都是在「一个问题」上做文章——要么改写它、要么给它配个假设答案、要么把它抽象化。但还有第四种情况：<strong>问题的角度本身就比较窄，一个角度去检索，覆盖面不够</strong>。这时候需要换个思路。</p>
+<hr>
+<h2 id="五、鸿沟④：角度单一-→-多-Query-扩展"><a href="#五、鸿沟④：角度单一-→-多-Query-扩展" class="headerlink" title="五、鸿沟④：角度单一 → 多 Query 扩展"></a>五、鸿沟④：角度单一 → 多 Query 扩展</h2><p>前三种是「把一个问题改得更好」，多 Query 扩展是「生成多个不同角度的问题」。</p>
+<p>用 LLM 把用户原始问题改写成 <strong>3～5 个不同角度的版本</strong>，分别去检索，再把所有结果合并去重：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">原始问题：「如何优化 RAG 检索效果？」</span><br><span class="line"></span><br><span class="line">扩展角度：</span><br><span class="line">  ① 检索召回率低怎么优化？</span><br><span class="line">  ② 向量检索和关键词检索怎么结合？</span><br><span class="line">  ③ 重排（rerank）怎么提升检索精度？</span><br><span class="line">  ④ 查询改写有哪些方法？</span><br><span class="line"></span><br><span class="line">→ 每个角度各检索一遍 → 合并结果、去重 → 一起送入后续流程</span><br></pre></td></tr></table></figure>
+
+<p>核心思路：<strong>只要有一个改写版本和文档的表述对上了，就能把正确的内容召回来</strong>——就像拦截网越宽，捕到鱼的概率越高。</p>
+<p><strong>适用场景</strong>：用户提问风格多变、和文档表述差异大的场景，以及<strong>答案涉及多个维度的复杂问题</strong>。</p>
+<p><strong>代价</strong>：N 次 LLM 调用 + N 次检索——延迟和成本都随数量线性增长，需要在覆盖度和开销之间取平衡。</p>
+<hr>
+<h2 id="六、四招横向对比：各治一道鸿沟"><a href="#六、四招横向对比：各治一道鸿沟" class="headerlink" title="六、四招横向对比：各治一道鸿沟"></a>六、四招横向对比：各治一道鸿沟</h2><p>把四种方法放在一起，选型依据一目了然：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>治理的鸿沟</th>
+<th>额外开销</th>
+<th>适合场景</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>直接改写</strong></td>
+<td>口语化、指代不清、上下文丢失</td>
+<td>1 次 LLM 调用</td>
+<td>多轮对话场景</td>
+</tr>
+<tr>
+<td><strong>HyDE</strong></td>
+<td>问题和文档文体风格差异大</td>
+<td>1 次 LLM 调用</td>
+<td>专业知识库、文体差异明显</td>
+</tr>
+<tr>
+<td><strong>Step-back</strong></td>
+<td>具体问题需要背景知识辅助</td>
+<td>1 次 LLM 调用</td>
+<td>技术文档、需要原理支撑的场景</td>
+</tr>
+<tr>
+<td><strong>多 Query 扩展</strong></td>
+<td>单一角度覆盖不全</td>
+<td>N 次 LLM 调用</td>
+<td>答案涉及多个维度的复杂问题</td>
+</tr>
+</tbody></table>
+<p>两个原文没细讲的决策点，值得补充：</p>
+<p><strong>① 四种方法不是互斥的，可以叠加。</strong> 实际系统里最常见的组合是<strong>「直接改写 + 多 Query 扩展」</strong>：先用直接改写把口语化问题规范成一个标准问句，再从这个标准问句扩展出多个角度——既解决口语化，又解决覆盖面。更极致的场景可以「改写 + HyDE + 多 Query」三件套，但每多一层就多一次 LLM 调用和检索，延迟叠加。</p>
+<p><strong>② 代价不是免费的。</strong> 每一种改写都是额外的 LLM 调用：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>每 query 新增延迟</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>直接改写 &#x2F; HyDE &#x2F; Step-back</td>
+<td>+1 次 LLM 调用</td>
+<td>几百 ms 级，通常可接受</td>
+</tr>
+<tr>
+<td>多 Query 扩展</td>
+<td>+N 次 LLM 调用 + N 次检索</td>
+<td>高并发下要控制 N 和并发度</td>
+</tr>
+</tbody></table>
+<p>对于高 QPS 的线上 RAG 服务，这层延迟要考虑缓存策略——比如同义改写结果按 query 缓存、热点问题跳过改写直接检索。</p>
+<hr>
+<h2 id="七、灵魂总结"><a href="#七、灵魂总结" class="headerlink" title="七、灵魂总结"></a>七、灵魂总结</h2><p>回到开头的问题：<strong>Query Rewrite 不是简单地把口语转成书面语就完事了。</strong> 它的核心目的是弥合「用户提问」和「文档表述」之间的语义鸿沟——而这道鸿沟有四种不同的形态，每种形态对应一种策略：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">口语化表达     → 直接改写（Query Rewriting）</span><br><span class="line">文体差异       → HyDE（假设文档嵌入）</span><br><span class="line">问题太具体     → Step-back Prompting（后退提问）</span><br><span class="line">角度太单一     → 多 Query 扩展</span><br></pre></td></tr></table></figure>
+
+<p>记住两条心法：</p>
+<ol>
+<li><strong>先诊断鸿沟，再选方法</strong>：不是所有问题都值得改写，先判断用户问题和文档表述之间隔的是什么——口语、文体、粒度还是角度——对症下药</li>
+<li><strong>改写有成本，组合要克制</strong>：每次改写都是一次 LLM 调用，多 Query 更是 N 倍放大；线上服务要考虑缓存和并发控制，不是方法用得越多越好</li>
+</ol>
+<blockquote>
+<p>一句话收尾：<strong>Query Rewrite 的本质，是把「用户的问法」翻译成「知识库的写法」——四种方法对应四道鸿沟，选对方法比改得漂亮更重要。</strong> 它和上一篇的动态更新一样，都属于”检索之外的决定检索效果”的环节：上游问题不解决，下游调模型、调 chunk 都是事倍功半。</p>
+</blockquote>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+

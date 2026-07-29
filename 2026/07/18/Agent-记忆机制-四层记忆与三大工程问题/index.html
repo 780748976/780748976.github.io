@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>Agent 记忆机制：四层记忆 × 三个工程问题一次讲透 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.18 · AFTER SCHOOL NOTES</p>
+        <h1>Agent 记忆机制：四层记忆 × 三个工程问题一次讲透</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>Agent 和”单次问答工具”之间，隔着一层东西叫<strong>记忆</strong>。没有记忆，Agent 不记得你昨天说过的偏好，也撑不起一个多步任务——做到第三步就忘了第一步干了什么。</p>
+<p>这篇把 Agent 记忆机制从头到尾捋一遍：四层记忆（感知 &#x2F; 短期 &#x2F; 长期 &#x2F; 实体）怎么划分、设计记忆模块绕不开的三个工程问题（存什么 &#x2F; 怎么存 &#x2F; 什么时候取）、context window 塞满怎么办、知识图谱和记忆整合怎么把”碎片”变成”知识”，最后落成一个「读 → 用 → 写」的完整闭环。</p>
+<p>一句话版本：<strong>记忆模块设计的核心不是”用什么数据库”，而是”存什么值得存、用什么介质存、什么时机取出来用”——三个问题答全，方案才完整。</strong></p>
+</blockquote>
+<hr>
+<h2 id="一、没有记忆的-Agent-有多不好用"><a href="#一、没有记忆的-Agent-有多不好用" class="headerlink" title="一、没有记忆的 Agent 有多不好用"></a>一、没有记忆的 Agent 有多不好用</h2><p>要理解记忆机制为什么重要，先感受一下”没有记忆”的 Agent 有多难用。</p>
+<p>你今天告诉 Agent「我喜欢代码风格简洁、变量命名用英文、不要过度注释」，它帮你完成了今天的任务。明天你重新打开对话让它写新功能，它输出的代码风格和昨天完全不一样：中文注释一堆、变量名很啰嗦。</p>
+<p>你很困惑。但对 Agent 来说，<strong>昨天的对话压根不存在</strong>——每次对话都是全新的开始，之前达成的所有约定都消失了。</p>
+<p>这还只是”偏好记忆”的问题。更严重的是”任务状态”的问题：Agent 执行多步任务时，如果没有短期记忆维持状态，它就不知道自己上一步做了什么、当前在哪个阶段、已经收集了哪些信息。你让它”先查资料，再整理成报告”，没有记忆的话，整理报告这一步根本不知道查到了什么。</p>
+<blockquote>
+<p><strong>记忆，是 Agent 从”单次问答工具”变成”真正助手”的关键分水岭。</strong> 有了记忆，它才能积累对你的了解，才能在多步任务中保持连贯，才能跨任务沉淀知识。</p>
+</blockquote>
+<hr>
+<h2 id="二、四层记忆：从最短暂到最持久"><a href="#二、四层记忆：从最短暂到最持久" class="headerlink" title="二、四层记忆：从最短暂到最持久"></a>二、四层记忆：从最短暂到最持久</h2><p>记忆机制可以对应人类的记忆系统来理解，从最短暂到最持久分四个层次。先提醒一句：下面的「感知 &#x2F; 短期 &#x2F; 长期 &#x2F; 实体」是<strong>工程上方便把记忆管理拆成四档的划分</strong>，借用了认知科学的词（情节、语义、程序），但和心理学严格意义上的分类不完全一致——目的是帮我们建立直觉，不是学术标准。</p>
+<h3 id="2-1-感知记忆（Sensory-Memory）：最短暂的一层"><a href="#2-1-感知记忆（Sensory-Memory）：最短暂的一层" class="headerlink" title="2.1 感知记忆（Sensory Memory）：最短暂的一层"></a>2.1 感知记忆（Sensory Memory）：最短暂的一层</h3><p>就是**”当前这次调用的原始输入”**——用户发来的这条消息、上传的截图、传入的文档。它的生命周期只有一次调用，处理完就消失，不会主动保留。</p>
+<p>类比到人：你刚听到的一句话，如果没有主动去记，几秒后就忘了。感知记忆就是这个”刚进来还没处理”的原始感知，它存在的意义是给模型提供一个”入口”来接收外部信息。</p>
+<h3 id="2-2-短期记忆（Short-term-Memory）：context-window-里的工作台"><a href="#2-2-短期记忆（Short-term-Memory）：context-window-里的工作台" class="headerlink" title="2.2 短期记忆（Short-term Memory）：context window 里的工作台"></a>2.2 短期记忆（Short-term Memory）：context window 里的工作台</h3><p>这是 <strong>context window 里的 messages 列表</strong>，维持着当前任务执行过程中的完整状态：用户说了什么、模型输出了什么、工具调用返回了什么。只要任务还在进行，这些信息就都在；任务结束（对话关闭），这块记忆就清空了。</p>
+<p>你可以把它想象成你的”工作台”——桌上摆着的都是正在处理的东西：</p>
+<ul>
+<li><strong>随时可见</strong>：不需要去翻箱倒柜地”找”，直接读就行。</li>
+<li><strong>有大小限制</strong>：token 上限就是工作台的大小，放满了就得清一清。</li>
+</ul>
+<h3 id="2-3-长期记忆（Long-term-Memory）：档案室"><a href="#2-3-长期记忆（Long-term-Memory）：档案室" class="headerlink" title="2.3 长期记忆（Long-term Memory）：档案室"></a>2.3 长期记忆（Long-term Memory）：档案室</h3><p>这是<strong>跨任务保留的信息</strong>，存在外部数据库里，通常是向量数据库、关系数据库或 Key-Value 存储。任务结束了信息不会消失，下次需要时去检索拿回来用。你可以把它理解成你的”档案室”——东西放进去不会丢，但要用的时候需要主动去翻。</p>
+<p>长期记忆的关键技术是<strong>向量数据库</strong>，它支持”语义检索”：你不需要知道存的时候用了什么关键词，只要意思相近就能检索到。比如你存的是「用户不喜欢冗长的注释」，用「代码风格偏好」去查也能找到它——这比精确匹配灵活得多。</p>
+<p>长期记忆不是铁板一块，还可以细分成三种子类型：</p>
+<table>
+<thead>
+<tr>
+<th>子类型</th>
+<th>存什么</th>
+<th>例子</th>
+<th>价值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>情节记忆</strong>（Episodic）</td>
+<td>具体的事件经历（时间 + 场景 + 过程 + 结果）</td>
+<td>「上周二用户让我写 Python 爬虫，遇到反爬，最后用 Selenium 解决」</td>
+<td>遇到类似新任务时，参考上次怎么解决的，避免重复踩坑</td>
+</tr>
+<tr>
+<td><strong>语义记忆</strong>（Semantic）</td>
+<td>从多次经历中提炼的通用知识和规律</td>
+<td>「目标网站有 JS 动态渲染时，requests 抓不到内容，应该优先 Selenium &#x2F; Playwright」</td>
+<td>信息密度更高，检索更容易命中——存的是结论而不是过程</td>
+</tr>
+<tr>
+<td><strong>程序记忆</strong>（Procedural）</td>
+<td>怎么做某件事的操作流程（SOP）</td>
+<td>「部署 Flask 标准步骤：建虚拟环境 → 装依赖 → 配 gunicorn → 设 nginx → 启动」</td>
+<td>重复任务不用每次从头推理，直接调 SOP，又快又稳</td>
+</tr>
+</tbody></table>
+<p>三种子类型各有侧重，实际项目通常混合使用：情节记忆提供具体参考案例，语义记忆提供抽象知识规律，程序记忆提供可复用操作流程。</p>
+<h3 id="2-4-实体记忆（Entity-Memory）：比长期记忆更精炼"><a href="#2-4-实体记忆（Entity-Memory）：比长期记忆更精炼" class="headerlink" title="2.4 实体记忆（Entity Memory）：比长期记忆更精炼"></a>2.4 实体记忆（Entity Memory）：比长期记忆更精炼</h3><p>这层<strong>不存原文</strong>，而是把对话中出现的关键实体和事实主动提取出来，存成结构化字段。比如「用户偏好 Python」「客户预算是 5 万」「项目截止日是 3 月底」——这些是从对话里提炼出来的”结论”，而不是原始对话本身。</p>
+<p>类比到人：就像医生的病历卡——不是把问诊录音存起来，而是结构化地记录「主诉：头痛三天；诊断：偏头痛；用药：布洛芬」。信息密度高、查询快，而且不受原始表述方式影响。</p>
+<p>四层记忆横向对比：</p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>载体</th>
+<th>容量</th>
+<th>生命周期</th>
+<th>访问方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>感知记忆</td>
+<td>当次输入</td>
+<td>极小</td>
+<td>单次调用</td>
+<td>即时访问</td>
+</tr>
+<tr>
+<td>短期记忆</td>
+<td>context window</td>
+<td>受 token 限制</td>
+<td>一次任务</td>
+<td>直接读取</td>
+</tr>
+<tr>
+<td>长期记忆</td>
+<td>向量 &#x2F; 关系数据库</td>
+<td>无限</td>
+<td>持久</td>
+<td>语义检索</td>
+</tr>
+<tr>
+<td>实体记忆</td>
+<td>结构化存储</td>
+<td>无限</td>
+<td>持久</td>
+<td>精确查询</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="三、三个工程问题：存什么、怎么存、什么时候取"><a href="#三、三个工程问题：存什么、怎么存、什么时候取" class="headerlink" title="三、三个工程问题：存什么、怎么存、什么时候取"></a>三、三个工程问题：存什么、怎么存、什么时候取</h2><p>理解了四种记忆类型，设计记忆模块时还要解决三个工程问题——<strong>这才是记忆系统真正的难点</strong>。光会存还不够，三个问题缺一个，方案都不完整。</p>
+<h3 id="3-1-存什么？"><a href="#3-1-存什么？" class="headerlink" title="3.1 存什么？"></a>3.1 存什么？</h3><p><strong>不是所有内容都值得写入长期记忆</strong>——存太多反而引入噪音，让检索精准度下降。判断标准其实很简单：</p>
+<blockquote>
+<p>「这条信息，下次任务开始时如果知道，会让 Agent 做得更好吗？」</p>
+</blockquote>
+<p>通常值得存的有三类：</p>
+<ul>
+<li><strong>用户偏好和习惯</strong>：语言风格、技术栈偏好、工作习惯。</li>
+<li><strong>任务执行中产生的关键结论和决策</strong>：比如「调研发现竞品 A 的定价策略是按用量收费」。</li>
+<li><strong>外部知识</strong>：产品文档、FAQ、历史案例。</li>
+</ul>
+<p>不值得存的：中间推理过程、工具返回的原始数据（日志太啰嗦）、闲聊内容。这些存进去只会稀释有价值的记忆，让检索的信噪比下降。</p>
+<h3 id="3-2-怎么存？"><a href="#3-2-怎么存？" class="headerlink" title="3.2 怎么存？"></a>3.2 怎么存？</h3><p><strong>根据信息类型选合适的存储介质，而不是一刀切全塞进向量数据库</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>内容类型</th>
+<th>存储介质</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>非结构化文本（文档知识、对话摘要）</td>
+<td>向量数据库</td>
+<td>embedding 编码后相似度检索</td>
+</tr>
+<tr>
+<td>结构化偏好 &#x2F; 状态字段（语言偏好、项目配置）</td>
+<td>关系数据库 &#x2F; KV</td>
+<td>精确查询，不需要语义理解</td>
+</tr>
+<tr>
+<td>整段文档 &#x2F; 知识库</td>
+<td>向量数据库</td>
+<td>配合 RAG 流程做召回</td>
+</tr>
+</tbody></table>
+<p><strong>混合存储是主流做法</strong>：结构化的偏好字段用关系数据库精确查，非结构化的知识和历史用向量数据库语义检索，两者配合使用。</p>
+<h3 id="3-3-什么时候取出来用？"><a href="#3-3-什么时候取出来用？" class="headerlink" title="3.3 什么时候取出来用？"></a>3.3 什么时候取出来用？</h3><p>这个问题有两种策略，实践中通常结合使用：</p>
+<p><strong>① 主动检索（任务开始前）</strong>：用当前任务的描述去检索相关记忆，把结果注入 system prompt 作为背景知识。这样 Agent 一开始就带着”历史记忆”进入任务，不需要用户每次重新交代背景。</p>
+<p><strong>② 被动触发（执行过程中）</strong>：Agent 在推理过程中，判断当前步骤需要某类特定知识时，主动发起检索。具体做法是把”查记忆”封装成一个 Tool，让 Agent 自己决定什么时候调——这种方式更灵活，但依赖模型判断什么时候该去查。</p>
+<p>实践上两种结合效果最好：session 开始时做一次主动检索，把用户偏好和背景的记忆加载进 system prompt；任务执行过程中，遇到需要专业知识或历史数据的步骤，再让 Agent 按需检索。</p>
+<hr>
+<h2 id="四、Context-Window-管理：工作台放不下怎么办"><a href="#四、Context-Window-管理：工作台放不下怎么办" class="headerlink" title="四、Context Window 管理：工作台放不下怎么办"></a>四、Context Window 管理：工作台放不下怎么办</h2><p>短期记忆存在 context window 里，而 context window 有 token 上限。一个复杂的多步任务，对话历史越来越长、工具返回结果越来越多，很快就把 context window 塞满——满了之后新内容进不去，或者被迫截断早期历史，Agent 就”失忆”了。</p>
+<p>这个问题非常常见，解决方案从简单到复杂有好几种：</p>
+<p><strong>① 滑动窗口</strong>：只保留最近 N 轮对话，更早的历史直接丢弃。实现简单，代价是早期的重要信息可能被丢掉——比如用户第一轮就说”所有代码用 TypeScript”，到第十轮这条信息被滑出窗口，Agent 又开始写 JavaScript，用户会很崩溃。</p>
+<p><strong>② 摘要压缩</strong>：历史长度接近上限时，用 LLM 把早期对话压缩成一段摘要，替换掉原始冗长历史。比如把前面十轮的详细对话压缩成：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">用户要求用 TypeScript 编写一个 REST API，已完成数据库设计和路由定义，</span><br><span class="line">当前正在实现用户认证模块。</span><br></pre></td></tr></table></figure>
+
+<p>一段话保留关键信息，token 占用从几千降到几百。代价是压缩过程会丢失细节，而且需要额外的 LLM 调用做摘要。</p>
+<p><strong>③ 卸载到长期记忆</strong>：把不常用但重要的信息”卸载”到向量数据库里，从 context window 移除，等后面某步需要时再检索回来。相当于给工作台配了一个”抽屉”——桌面放不下的东西先收到抽屉里，要用的时候再拿出来。</p>
+<p>这三种传统方案能解决大部分场景，但最近两年出现了一些专门为 Agent 记忆设计的开源框架，把上面这些策略做了更系统的封装，值得了解一下。</p>
+<h3 id="记忆框架巡礼：Mem0-Letta-Zep"><a href="#记忆框架巡礼：Mem0-Letta-Zep" class="headerlink" title="记忆框架巡礼：Mem0 &#x2F; Letta &#x2F; Zep"></a>记忆框架巡礼：Mem0 &#x2F; Letta &#x2F; Zep</h3><p><strong>Mem0</strong>（GitHub 超 5 万星，目前社区最活跃的 Agent 记忆框架之一）：核心思路是把记忆管理做成一个独立的服务层。你只需要调用 <code>memory.add()</code> 存记忆、<code>memory.search()</code> 查记忆，底层的 embedding、去重、冲突消解全帮你做了。它特别适合”个性化记忆”场景——按 <code>user_id</code> 做记忆隔离，不同用户的记忆互不干扰；同时支持向量存储和图存储（知识图谱），在需要关系推理的场景也能用。</p>
+<p><strong>Letta</strong>（前身就是大名鼎鼎的 MemGPT）：设计灵感来自操作系统的内存管理。就像操作系统把内存分成多个层级（寄存器、缓存、主存、磁盘），Letta 把 Agent 记忆分成三个层级：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">Core Memory      始终留在 context window（用户画像、当前任务目标）</span><br><span class="line">                 ≈ 操作系统的主存，随时可读可写</span><br><span class="line">Recall Memory    最近的对话历史，按时间顺序存储，支持快速回溯</span><br><span class="line">                 ≈ 缓存</span><br><span class="line">Archival Memory  长期归档的知识，容量无限但检索需要主动发起</span><br><span class="line">                 ≈ 磁盘</span><br></pre></td></tr></table></figure>
+
+<p>最有意思的是，Letta <strong>让 Agent 自己通过工具调用管理这三层记忆</strong>——自己决定什么时候把信息从 Core Memory 移到 Archival Memory，什么时候从 Recall Memory 检索旧对话。这种”让 Agent 自己管理记忆”的思路比固定规则更灵活，但也更依赖模型的判断能力。</p>
+<p><strong>Zep</strong>（及其开源组件 Graphiti）：独特之处在于引入”时间感知”概念。很多记忆框架只存内容不存时间，但 Zep 会给每条记忆标注”有效时间窗口”——比如「用户的预算是 5 万」这条记忆可能三个月后就过期了。它通过<strong>时序知识图谱</strong>管理记忆的生命周期，自动识别哪些记忆过时、哪些仍有效，在长期运行的 Agent 系统中非常实用。</p>
+<hr>
+<h2 id="五、知识图谱：让记忆之间产生关联"><a href="#五、知识图谱：让记忆之间产生关联" class="headerlink" title="五、知识图谱：让记忆之间产生关联"></a>五、知识图谱：让记忆之间产生关联</h2><p>前面讲的向量数据库做语义检索，本质上是”一条一条”地存记忆、”一条一条”地取记忆——<strong>每条记忆之间是独立的，没有关联</strong>。但很多时候，信息之间的关系和信息本身一样重要。</p>
+<p>举个例子。你存了「用户 A 是公司 B 的 CTO」和「公司 B 的主营业务是云计算」，如果这两条记忆之间没有关联，当你问「用户 A 所在公司做什么业务」的时候，纯向量检索可能检索不到——因为这两条记忆的文本相似度并不高。</p>
+<p>知识图谱就是用来解决这个问题的。它用「<strong>实体 → 关系 → 实体</strong>」的三元组结构存储信息：把一条知识拆成”主语、谓语、宾语”三部分，每一组就是一个三元组。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">「用户 A -&gt; 担任 CTO -&gt; 公司 B」      ← 三元组 1</span><br><span class="line">「公司 B -&gt; 主营业务 -&gt; 云计算」      ← 三元组 2</span><br><span class="line">「公司 B -&gt; 成立于 -&gt; 2015 年」       ← 三元组 3</span><br></pre></td></tr></table></figure>
+
+<p>实体和实体之间通过明确的关系连接起来，形成一张网状的知识网络。<strong>查询时可以沿着关系链条做多跳推理</strong>，这是知识图谱最厉害的地方：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">问：用户 A 所在公司做什么业务？</span><br><span class="line">① 从「用户 A」出发，沿「担任 CTO」→ 找到「公司 B」</span><br><span class="line">② 从「公司 B」出发，沿「主营业务」→ 找到「云计算」</span><br><span class="line">两跳拿到答案 ✔</span><br></pre></td></tr></table></figure>
+
+<p>如果想问「用户 A 的同事有谁」，可以从「公司 B」出发，沿「员工」关系找到所有关联的人。这种沿关系链条跳转查询的能力，向量检索做不到——因为向量检索只能找到文本语义相近的内容，而「用户 A」和「云计算」这两个文本在语义上根本不相近。</p>
+<p>在 Agent 的记忆模块里，知识图谱通常和向量数据库<strong>配合使用</strong>：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">对话过程中：LLM 自动提取实体和关系 → 存入知识图谱</span><br><span class="line">检索时：先用向量检索拿到一批候选记忆</span><br><span class="line">     → 再用知识图谱补充关联信息</span><br><span class="line">     → 合并两部分结果注入 context</span><br></pre></td></tr></table></figure>
+
+<p>向量数据库负责模糊的语义检索（比如用户说”之前那个项目”，向量检索能找到最相关的项目记忆），知识图谱负责精确的关系推理（比如查某个用户的所有相关公司和角色），两者互补。</p>
+<hr>
+<h2 id="六、记忆整合：从碎片到知识"><a href="#六、记忆整合：从碎片到知识" class="headerlink" title="六、记忆整合：从碎片到知识"></a>六、记忆整合：从碎片到知识</h2><p>Agent 用久了之后，长期记忆里会积累大量碎片化信息：同一个主题可能存了十几条不同时间的记忆，有些内容重复，有些已经过时，有些甚至互相矛盾。如果不整理，检索时噪音越来越大，有用的记忆被淹没在无用的碎片里。</p>
+<p>**记忆整合就是定期对长期记忆做”清理和升华”**，包含几个关键环节：</p>
+<p><strong>① 去重</strong>：把语义相近的多条记忆合并成一条更完整的版本。比如「用户喜欢简洁的代码」「用户说过代码要精简」「用户要求不要冗余代码」——表达的是同一个意思，合并成一条「用户偏好简洁精练的代码风格，反对冗余」就够了。</p>
+<p><strong>② 冲突消解</strong>：两条记忆互相矛盾时（比如「用户偏好 Python」和后来说的「最近转用 Go 了」），保留时间更新的那条，标记旧的为过期。这里<strong>时间戳非常关键</strong>——没有时间戳就无法判断哪条是最新的。</p>
+<p><strong>③ 抽象提炼</strong>（最有价值的一环）：本质上是把<strong>情节记忆转化为语义记忆</strong>的过程。</p>
+<p>什么意思呢？情节记忆存的是一次次具体的经历：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">第一次：用户让我写爬虫，requests 被反爬拦住，换成 Selenium 才行</span><br><span class="line">第二次：用户让我抓电商价格，页面是 JS 渲染的，requests 拿到空页面，用 Playwright 解决</span><br><span class="line">第三次：用户让我采集论坛帖子，同样遇到动态加载的问题</span><br></pre></td></tr></table></figure>
+
+<p>这三条各自都是独立的事件记录，但放在一起看，会发现一个共同规律：</p>
+<blockquote>
+<p><strong>当目标网站有动态渲染时，基于 HTTP 的简单请求库（如 requests）往往拿不到完整内容，需要用浏览器自动化工具（Selenium &#x2F; Playwright）来处理。</strong></p>
+</blockquote>
+<p>这条从多次经历中”蒸馏”出来的规律，就是语义记忆——它比任何一条情节记忆都更通用、更浓缩、更容易在未来的新任务中被检索命中。这个转化过程可以用 LLM 自动完成：把一批相关的情节记忆喂给 LLM，让它总结出通用的知识和规律，把总结结果作为新的语义记忆存入长期记忆。</p>
+<p>整合的节奏也很重要：<strong>每次任务结束后做一次轻量级的去重和更新</strong>就行，不需要大动干戈；然后<strong>每隔一段时间（比如每天或每周）再做一次深度的整理和提炼</strong>，把累积的情节记忆批量转化为语义记忆。有些框架（比如前面提到的 Mem0）已经内置了这种整合逻辑，会在后台异步地对记忆做去重、冲突消解和提炼。这样长期记忆会越来越精炼、越来越有价值，而不是越积越乱。</p>
+<hr>
+<h2 id="七、完整闭环：读-→-用-→-写"><a href="#七、完整闭环：读-→-用-→-写" class="headerlink" title="七、完整闭环：读 → 用 → 写"></a>七、完整闭环：读 → 用 → 写</h2><p>把四层记忆和三个核心问题放在一起，走一遍一次完整任务里它们是怎么协作的。整个过程可以用「读 → 用 → 写」三个阶段来描述。</p>
+<p><strong>第一阶段：任务开始前，先「读」记忆</strong></p>
+<p>用户发来一个新请求，Agent 不是立刻开始干活，而是先去”翻档案”：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">① 从实体记忆里取出用户的结构化偏好（语言偏好、风格要求、过往决策）</span><br><span class="line">② 用任务描述作为查询词，去长期记忆里做一次语义检索，拿回最相关的历史背景</span><br><span class="line">③ 把两部分信息拼进 system prompt 开头</span><br></pre></td></tr></table></figure>
+
+<p>Agent 进入任务时就已经带着完整的”用户画像”，不需要用户重复交代背景。</p>
+<p><strong>第二阶段：任务执行中，持续「用」记忆</strong></p>
+<p>短期记忆（messages 列表）全程工作：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">用户每一条消息、模型每一次输出、工具调用每一个结果</span><br><span class="line">→ 都追加进 messages</span><br><span class="line">→ 每次调用 LLM 都带上完整历史</span><br><span class="line">→ Agent 始终知道自己做到哪一步、前面发现了什么</span><br></pre></td></tr></table></figure>
+
+<p>如果某个执行步骤需要特定专业知识（比如查某个 API 的文档、回想某次历史决策），Agent 可以临时发起一次长期记忆检索——把”查记忆”封装成一个 Tool，用当前上下文作为查询词，把检索结果注入这一步的 context 里，<strong>用完即走</strong>，不需要永久保留在 messages 中。</p>
+<p><strong>第三阶段：任务结束后，主动「写」记忆</strong></p>
+<p>任务完成，进行最后一步：把本次任务产生的新知识写回持久化存储。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">用户表达了新偏好（「以后写函数都要加类型注解」）→ 更新实体记忆对应字段</span><br><span class="line">任务产生有价值结论（「竞品 A 的定价是按用量收费」）→ 写入长期记忆，embedding 后存入向量库</span><br><span class="line">短期记忆（messages 列表）→ 清空，工作台恢复干净，等待下一个任务</span><br></pre></td></tr></table></figure>
+
+<p>用流程图来看，整条链路是这样的：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">          任务开始                      任务执行中                   任务结束</span><br><span class="line">┌───────────────────┐      ┌──────────────────────┐      ┌───────────────────┐</span><br><span class="line">│  读：实体偏好 +    │      │  用：短期记忆全程     │      │  写：新知识入库     │</span><br><span class="line">│  语义检索背景      │ ───► │  按需 Tool 查长期记忆 │ ───► │  实体记忆更新字段   │</span><br><span class="line">│  → 注入 system    │      │  → 维持任务状态       │      │  长期记忆写向量库   │</span><br><span class="line">│  prompt           │      │                      │      │  messages 清空     │</span><br><span class="line">└───────────────────┘      └──────────────────────┘      └───────────────────┘</span><br><span class="line">            ▲                                                          │</span><br><span class="line">            └────────────────── 下次任务循环复用 ──────────────────────┘</span><br></pre></td></tr></table></figure>
+
+<p>「读 → 用 → 写」三个阶段形成完整闭环：每次任务开始时把历史积累读进来，执行中靠短期记忆保持连贯，结束后把新知识写回去沉淀。<strong>Agent 用得越多，积累越厚，越来越”了解”用户</strong>——这才是记忆系统真正的价值所在。</p>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+

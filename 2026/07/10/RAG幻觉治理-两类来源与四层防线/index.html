@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>RAG 幻觉治理：两类来源 × 四层防线，从「先治检索」到「生成后核查」 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.10 · AFTER SCHOOL NOTES</p>
+        <h1>RAG 幻觉治理：两类来源 × 四层防线，从「先治检索」到「生成后核查」</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>上一篇我们聊了检索侧的 Query Rewrite。这篇聊 RAG 落地时最让人头疼的问题：<strong>幻觉</strong>。</p>
+<p>很多人有个根深蒂固的误解：「做了 RAG 就不会有幻觉了」。实际完全不是这样——<strong>RAG 只是把知识库的内容塞进了 prompt，但塞进去不等于 LLM 会老老实实照着说</strong>。LLM 有自己的预训练知识储备，当 prompt 里的资料和它”学过”的不一致、甚至根本就没召回到相关内容时，它就会绕开资料自己发挥。</p>
+<p>一句话版本：<strong>RAG 里的幻觉有两个完全不同的来源——检索层没找到（LLM 靠猜）和生成层超发挥（LLM 自由发挥）；对应的四层防线从「最便宜」到「最严格」依次是：Prompt 强约束 → 检索质量门控 → 生成后引用核查 → 结构化溯源，而治幻觉的根本是先治检索。</strong></p>
+</blockquote>
+<hr>
+<h2 id="一、先搞清楚：幻觉到底从哪来"><a href="#一、先搞清楚：幻觉到底从哪来" class="headerlink" title="一、先搞清楚：幻觉到底从哪来"></a>一、先搞清楚：幻觉到底从哪来</h2><p>「幻觉」就是模型一本正经地说了一件<strong>压根不存在的事</strong>。它不是撒谎，它只是在「预测下一个词」——当没有可靠依据时，就会拼凑出一个”听起来合理”的答案。</p>
+<p>关键问题：<strong>RAG 不是已经把知识库内容塞进 prompt 了吗，LLM 为什么还会编？</strong> 因为 RAG 里有两道各自独立的环节，幻觉可能从任何一环漏进来：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">用户提问</span><br><span class="line">  → ① 检索层：从向量库找相关 chunk   ← 可能失败：没召回 / 召回无关内容</span><br><span class="line">  → ② 生成层：LLM 基于 chunk 生成答案 ← 可能超发挥：加推断、补细节、拼接</span><br></pre></td></tr></table></figure>
+
+<p><strong>来源一：检索层没找到，LLM 靠「猜」回答。</strong></p>
+<p>RAG 的前提是「检索到相关内容再生成」。但如果检索失败，prompt 里是空的或全是无关内容，LLM 不会说「我不知道」——它会用预训练时见过的知识<strong>编一个看起来像答案的东西</strong>，而且说得很自信，用户根本看不出来。</p>
+<blockquote>
+<p>例子：知识库里记录的退款政策是「7 天无理由退款」，但某次检索没召回到这个 chunk，LLM 用自己的「知识」给出了「30 天退款」的答案。用户按这个信息操作，退款失败——<strong>这就是检索层幻觉造成的实际损失</strong>。</p>
+</blockquote>
+<p><strong>来源二：检索到了，但 LLM 没有严格照着说。</strong></p>
+<p>这种幻觉<strong>更隐蔽、也更常见</strong>。相关的 chunk 确实被召回了，但 LLM 生成时”超发挥”了：把资料内容当基础，加上自己的推断、补充原文没有的细节、甚至把两段不相关的信息<strong>拼出一个”更完整”的答案</strong>。读者很难分辨哪句来自文档、哪句是 LLM 加的。</p>
+<blockquote>
+<p>这两种幻觉根源不同，解法也不一样。下面四层防线，从「成本最低」到「机制最严格」依次递进。</p>
+</blockquote>
+<hr>
+<h2 id="二、防线一：Prompt-强约束——事前立规矩（最便宜）"><a href="#二、防线一：Prompt-强约束——事前立规矩（最便宜）" class="headerlink" title="二、防线一：Prompt 强约束——事前立规矩（最便宜）"></a>二、防线一：Prompt 强约束——事前立规矩（最便宜）</h2><p><strong>这是成本最低、最容易上手、效果也立竿见影的方案。</strong> 很多人搭 RAG 时只是把 chunk 塞进 prompt，然后问「请回答这个问题」，并没有明确约束 LLM 的行为——LLM 就会觉得”这些资料只是参考，我可以结合自己的知识一起回答”，幻觉就这样产生了。</p>
+<p>修复方法很简单：在 system prompt 里明确立规矩：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">回答规则：</span><br><span class="line">① 只能使用【参考资料】中的信息回答，不得引入资料之外的知识</span><br><span class="line">② 如果参考资料中没有足够信息，必须明确回答：</span><br><span class="line">   「根据现有资料，无法回答该问题」</span><br><span class="line">③ 回答时标注信息来源（来自哪条参考资料）</span><br><span class="line">④ 不要推断、不要猜测、不要补充资料中没有明确说明的内容</span><br></pre></td></tr></table></figure>
+
+<p>每条规则都有它的道理：</p>
+<ul>
+<li>**①是让 LLM “知道自己的边界”**：明确告诉它，你只是个传话人，不是百科全书</li>
+<li><strong>②是给 LLM 一个「合法的逃生出口」</strong>：资料里没有答案时说”不知道”，比编一个看起来合理的答案好得多——这条规则允许 LLM <strong>优雅地认怂</strong></li>
+<li><strong>③是让 LLM 主动对照原文</strong>：相当于给它加了一个自检动作，哪句话来自哪条资料必须说清楚</li>
+</ul>
+<p><strong>这个方案压制的是「生成层幻觉」，对「检索层幻觉」帮助有限</strong>——如果 prompt 里根本没有相关内容，再强的约束也顶不住 LLM 瞎编。所以还需要下一道防线。</p>
+<hr>
+<h2 id="三、防线二：检索质量门控——检索质量差就拒答（前事拦截）"><a href="#三、防线二：检索质量门控——检索质量差就拒答（前事拦截）" class="headerlink" title="三、防线二：检索质量门控——检索质量差就拒答（前事拦截）"></a>三、防线二：检索质量门控——检索质量差就拒答（前事拦截）</h2><p>防线一解决了「LLM 超发挥」，但<strong>如果检索这一步就失败了，prompt 里全是无关内容，光靠 Prompt 约束是拦不住的</strong>。那怎么办？</p>
+<p>与其让 LLM 在低质量上下文里强行生成一个”可能是错的答案”，<strong>不如直接告诉用户「知识库里没有这个信息」</strong>。前者让用户误以为答案是对的，后者虽然看起来不那么智能，但至少不会给用户错误信息——<strong>答错比不答更危险</strong>。</p>
+<p>怎么判断检索质量够不够好？用 <strong>Rerank 模型打分</strong>：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">检索召回 top-K 候选 chunk</span><br><span class="line">  → Rerank 模型对每个候选打 0~1 相关度分</span><br><span class="line">  → 看最高分：</span><br><span class="line">      最高分 &lt; 阈值  → 直接返回「知识库无相关信息，建议联系人工」</span><br><span class="line">      最高分 ≥ 阈值  → 把所有达标的 chunk 筛出来喂给 LLM</span><br></pre></td></tr></table></figure>
+
+<p><strong>阈值设多少？</strong> 没有通用数字，得按业务数据调：</p>
+<ul>
+<li><strong>调法</strong>：拿一批「已知答案在知识库里」和「已知答案不在知识库里」的测试集跑一遍，看 Rerank 分数分布，找能把两类分开的切点</li>
+<li><strong>经验值</strong>：一般 0.3～0.6 之间——对精度要求高（金融、医疗）偏高，对召回率宽松（闲聊型问答）偏低</li>
+<li><strong>节奏</strong>：先从中间值开始，根据线上误判的样例往上或往下调</li>
+</ul>
+<p>你可能会觉得「拒答」会让系统显得很笨。但反过来想：用户问了一个知识库覆盖不到的问题，<strong>最好的答案就是「我不知道，请联系人工」，而不是 LLM 编一个听起来合理但实际错误的回答</strong>。</p>
+<blockquote>
+<p>防线一 + 防线二，正好各管一类幻觉：<strong>防线二负责「检索质量差时不让 LLM 胡说」，防线一负责「检索质量还行但 LLM 容易超发挥时把它框住」。</strong> 这两个是 RAG 系统上线前的基础配置，成本也最低。</p>
+</blockquote>
+<hr>
+<h2 id="四、防线三：生成后引用核查——事后审稿（最严格）"><a href="#四、防线三：生成后引用核查——事后审稿（最严格）" class="headerlink" title="四、防线三：生成后引用核查——事后审稿（最严格）"></a>四、防线三：生成后引用核查——事后审稿（最严格）</h2><p>前两道防线都是「生成之前」做防控，万一还是漏了呢？防线三在<strong>生成之后</strong>做校验：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">LLM 生成答案</span><br><span class="line">  → 发起「第二次 LLM 调用」</span><br><span class="line">  → 把原始答案 + chunk 一起送给 LLM，让它充当编辑角色</span><br><span class="line">  → 逐条核查每个声明在 chunk 里有没有对应依据</span><br><span class="line">  → 没有依据的内容：标注「无法核实」或直接删掉</span><br></pre></td></tr></table></figure>
+
+<p>就像文章写完还要请编辑审阅一遍——<strong>防线一是事前约束作者的行为，防线三是事后审稿</strong>。</p>
+<p><strong>代价</strong>：多一次 LLM 调用，响应延迟增加、成本翻倍。所以一般只在<strong>对准确性要求极高的场景</strong>使用——医疗问诊、法律咨询，答错了代价很大的地方。普通的企业知识库问答，防线一 + 防线二通常已经够用。</p>
+<hr>
+<h2 id="五、防线四：结构化溯源——让每条结论都带上来源编号（格式层）"><a href="#五、防线四：结构化溯源——让每条结论都带上来源编号（格式层）" class="headerlink" title="五、防线四：结构化溯源——让每条结论都带上来源编号（格式层）"></a>五、防线四：结构化溯源——让每条结论都带上来源编号（格式层）</h2><p>如果说防线三是在<strong>内容层面</strong>做校验，防线四就是在<strong>格式层面</strong>做约束——和防线一的「Prompt 约束」配合使用效果更好。</p>
+<p>让 LLM 输出结构化的 JSON，<strong>每个结论都必须填写来自哪条参考资料的编号</strong>：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;answer&quot;</span><span class="punctuation">:</span> <span class="string">&quot;完整回答&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;statements&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span></span><br><span class="line">    <span class="punctuation">&#123;</span> <span class="attr">&quot;claim&quot;</span><span class="punctuation">:</span> <span class="string">&quot;具体结论 1&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;source_ids&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="number">1</span><span class="punctuation">,</span> <span class="number">2</span><span class="punctuation">]</span> <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="punctuation">&#123;</span> <span class="attr">&quot;claim&quot;</span><span class="punctuation">:</span> <span class="string">&quot;具体结论 2&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;source_ids&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="number">3</span><span class="punctuation">]</span> <span class="punctuation">&#125;</span></span><br><span class="line">  <span class="punctuation">]</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;confidence&quot;</span><span class="punctuation">:</span> <span class="string">&quot;high&quot;</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>为什么有效？两个原因：</p>
+<ol>
+<li><strong>强制主动溯源，减少瞎编概率</strong>：LLM 在构建 JSON 时必须主动想”这条结论我从哪条资料里找到的”——就像让学生写论文必须标注参考文献，他自然就不敢随便编了</li>
+<li><strong>程序化验证成为可能</strong>：系统拿到 JSON 后可以自动校验，<code>source_ids</code> 对应的 chunk 如果和 claim 明显不相关，就自动过滤掉这条结论</li>
+</ol>
+<p>用户看到答案的同时就能看到来源，<strong>可以自己去原文核实</strong>。</p>
+<hr>
+<h2 id="六、四层防线怎么组合：按场景递进"><a href="#六、四层防线怎么组合：按场景递进" class="headerlink" title="六、四层防线怎么组合：按场景递进"></a>六、四层防线怎么组合：按场景递进</h2><p>四层防线不是要全上，而是<strong>按场景从易到难递进</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>配置</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>普通企业知识库 &#x2F; 客服问答</td>
+<td><strong>防线一 + 防线二</strong></td>
+<td>成本极低，幻觉问题能解决大半</td>
+</tr>
+<tr>
+<td>金融分析 &#x2F; 法律文档（高可信度）</td>
+<td>+ 防线四</td>
+<td>每条答案带来源编号，用户可以自己核实</td>
+</tr>
+<tr>
+<td>医疗问诊 &#x2F; 合规审核（极低容错）</td>
+<td><strong>四层全上</strong></td>
+<td>答错代价大，用延迟和成本换最高准确性</td>
+</tr>
+</tbody></table>
+<p>把四层防线放在幻觉的两类来源上，可以画成一张全景图：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">检索层幻觉（没召回 → LLM 靠猜）        生成层幻觉（召回了 → LLM 超发挥）</span><br><span class="line">        │                                      │</span><br><span class="line">        ▼                                      ▼</span><br><span class="line">  防线二：检索质量门控                 防线一：Prompt 强约束</span><br><span class="line">  （Rerank 分数低 → 拒答）             （只准照资料说 + 说不知道）</span><br><span class="line">        │                                      │</span><br><span class="line">        └──────────────┬───────────────────────┘</span><br><span class="line">                       ▼</span><br><span class="line">              防线三：生成后引用核查（事后逐条审稿）</span><br><span class="line">              防线四：结构化溯源（每条结论带 source_ids）</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="七、灵魂总结：治幻觉，先治检索"><a href="#七、灵魂总结：治幻觉，先治检索" class="headerlink" title="七、灵魂总结：治幻觉，先治检索"></a>七、灵魂总结：治幻觉，先治检索</h2><p>回到开头：<strong>「检索做好了就不会幻觉」这个想法是错的</strong>——RAG 里的幻觉有两个来源，检索层没召回到内容、LLM 靠自身知识编造；以及检索到了但 LLM 超发挥、在资料基础上加了自己的推断。</p>
+<p>「在 prompt 里加一句请根据资料回答」也远远不够，你需要一整套系统的防控策略：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Prompt 强约束        压制生成层幻觉     （最便宜，上线前必做）</span><br><span class="line">检索质量门控         检索失败时直接拒答  （最便宜，上线前必做）</span><br><span class="line">生成后引用核查       二次校验逐条审稿    （贵，只在高风险场景用）</span><br><span class="line">结构化溯源           每条结论有据可查    （和防线一配合效果最好）</span><br></pre></td></tr></table></figure>
+
+<p>最后记住最核心的一条认知——<strong>检索质量是幻觉的最大来源</strong>：</p>
+<blockquote>
+<p>检索到了正确的内容，Prompt 再稍微约束一下，幻觉就已经少很多了；<strong>如果检索这一步就烂，再多的生成层约束也填不了这个坑。所以治幻觉，先治检索。</strong></p>
+</blockquote>
+<p>这和前面几篇是同一个道理：检索侧的 Query Rewrite、知识库侧的动态更新、再到生成侧的幻觉治理——<strong>RAG 的效果上限，由你解决的问题决定</strong>。</p>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+

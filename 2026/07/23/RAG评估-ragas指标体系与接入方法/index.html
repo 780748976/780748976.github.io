@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8b8c5">
+  <title>RAG 评估入门：ragas 指标体系与接入方法 | YUK1&#39;s 放课后日志</title>
+  <meta name="description" content="在代码、音乐和下午茶之间，记录那些值得反复播放的日常。">
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+<link rel="stylesheet" href="/css/style.css">
+
+<meta name="generator" content="Hexo 7.3.0"></head>
+<body>
+  <header class="site-header">
+  <div class="nav-wrap">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span>放课后日志</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" aria-label="主导航">
+      
+        <a href="/">首页</a>
+      
+        <a href="/archives/">归档</a>
+      
+      <a href="/about/">关于</a>
+    </nav>
+  </div>
+</header>
+
+
+  <main>
+    
+<div class="page-shell">
+  <article class="article">
+    <div class="article-hero hero-1">
+      <a class="back-link" href="/">← 返回日志</a>
+      <img src="/images/article-hero-1.jpg" alt="轻音少女壁纸">
+      <div class="article-hero-shade"></div>
+      <div class="article-hero-copy">
+        <p class="article-eyebrow"><span>♪</span> 2026.07.23 · AFTER SCHOOL NOTES</p>
+        <h1>RAG 评估入门：ragas 指标体系与接入方法</h1>
+        <div class="tag-row article-tags"></div>
+      </div>
+    </div>
+    <div class="article-content"><blockquote>
+<p>前面几篇我们聊了检索侧的 Query Rewrite、知识库的动态更新、生成侧的幻觉治理——这些方案都在「做」：让 RAG 更好。但有个问题一直没回答：<strong>做了这么多改进，怎么知道效果好不好？</strong> 这篇聊怎么「量」。</p>
+<p>一句话版本：<strong>ragas 是当前最主流的 RAG 评估开源框架，核心思路是「用 LLM 当裁判」，把 RAG 拆成「检索质量」和「生成质量」两个环节分别打分。四大经典指标各管一件事：Faithfulness 管生成有没有照着上下文说，Answer Relevancy 管有没有答非所问，Context Precision 管召回的排序对不对，Context Recall 管该找的内容找全没有。接入只需三步：准备一条评估数据（问题 &#x2F; 答案 &#x2F; 上下文 &#x2F; 标准答案）→ 配一个评估用的 LLM → 调 <code>evaluate()</code> 跑出分数。</strong></p>
+</blockquote>
+<hr>
+<h2 id="一、为什么-RAG-不能用-BLEU-ROUGE-来评估"><a href="#一、为什么-RAG-不能用-BLEU-ROUGE-来评估" class="headerlink" title="一、为什么 RAG 不能用 BLEU &#x2F; ROUGE 来评估"></a>一、为什么 RAG 不能用 BLEU &#x2F; ROUGE 来评估</h2><p>评估一个 RAG 系统，最直觉的做法是拿它的回答和标准答案比一比，像机器翻译那样算个 BLEU。但这套传统指标在 RAG 场景下基本失效，原因有两个：</p>
+<p><strong>1. BLEU&#x2F;ROUGE 比的是「文本长得像不像」，RAG 要的是「事实对不对」。</strong></p>
+<p>标准答案写「退款政策是 7 天无理由」，RAG 回答「客户可在收货后 7 日内申请全额退款」。这句话和标准答案用词完全不同，BLEU 会给出很低的分数——但它<strong>事实完全正确</strong>。反过来，RAG 把标准答案原封不动抄一遍，但答错了问题（问 A 答 A 的模板），BLEU 反而给高分。RAG 的质量核心是<strong>语义和事实</strong>，不是字面重合度。</p>
+<p><strong>2. RAG 是两段式结构，只评最终答案没法定位问题。</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">用户提问</span><br><span class="line">  → ① 检索层：从向量库找相关 chunk</span><br><span class="line">  → ② 生成层：LLM 基于 chunk 生成答案</span><br></pre></td></tr></table></figure>
+
+<p>如果答案质量差，到底是<strong>检索没找对</strong>还是<strong>生成没用好</strong>？只看最终答案无法回答。RAG 评估必须拆开：<strong>检索质量一套指标，生成质量一套指标</strong>，出了问题才能定位到具体环节——这正好接上我们聊过的幻觉治理：治幻觉先治检索，但「检索到底烂不烂」，得有一个量化的尺子。</p>
+<p><strong>ragas 就是这把尺子。</strong> 它是一个开源评估框架，思路是：与其用 n-gram 算相似度，不如<strong>让一个 LLM 来当裁判</strong>，用「提问 + 推理」的方式给每个环节打分。指标本身是 LLM 判断出来的，所以能理解语义、能识别事实错误。代价是评估过程要消耗 LLM 调用——这个后文细说。</p>
+<hr>
+<h2 id="二、先认识评估数据的四个字段"><a href="#二、先认识评估数据的四个字段" class="headerlink" title="二、先认识评估数据的四个字段"></a>二、先认识评估数据的四个字段</h2><p>任何 RAG 评估，数据本质上都是「一条问答记录」加上「检索和生成过程中的痕迹」。ragas 的最小评估数据长这样：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>必须吗</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>question</code></td>
+<td>用户问了什么</td>
+<td>必须</td>
+</tr>
+<tr>
+<td><code>answer</code></td>
+<td>RAG 系统给出的回答</td>
+<td>必须</td>
+</tr>
+<tr>
+<td><code>contexts</code></td>
+<td>检索召回、喂给 LLM 的 chunk 列表</td>
+<td>必须</td>
+</tr>
+<tr>
+<td><code>ground_truth</code></td>
+<td>人工标注的标准答案</td>
+<td>看指标</td>
+</tr>
+</tbody></table>
+<p><strong><code>ground_truth</code> 决定你能算哪些指标</strong>：Faithfulness、Answer Relevancy 不需要标准答案（有 question + answer + contexts 就能算）；Context Precision、Context Recall、Answer Correctness 需要。这个映射在第三节讲指标时展开。</p>
+<p>注意新旧版本的字段名：老版本叫 <code>question/answer/contexts/ground_truth</code>，新版本（v0.2+）统一改成了 <code>user_input/response/retrieved_contexts/reference</code>，<strong>内容一样、只是改了名</strong>。看老教程时别对不上。</p>
+<hr>
+<h2 id="三、四大经典指标：每管一件事"><a href="#三、四大经典指标：每管一件事" class="headerlink" title="三、四大经典指标：每管一件事"></a>三、四大经典指标：每管一件事</h2><p>ragas 的指标很多，但核心是这四个，也是绝大多数评估的基本盘。逐个说清楚「它衡量什么 + 怎么算的」。</p>
+<h3 id="指标一：Faithfulness（忠实度）——-生成层有没有幻觉"><a href="#指标一：Faithfulness（忠实度）——-生成层有没有幻觉" class="headerlink" title="指标一：Faithfulness（忠实度）—— 生成层有没有幻觉"></a>指标一：Faithfulness（忠实度）—— 生成层有没有幻觉</h3><p><strong>衡量的是：回答里的每一句话，是不是都能在检索到的上下文里找到依据。</strong> 这正是幻觉治理那篇说的「生成层超发挥」——上下文里没有的信息，LLM 自己脑补出来了。</p>
+<p>计算原理分三步：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">① 把答案拆成多个独立论断（statements）</span><br><span class="line">   「这家店支持 7 天无理由退款」→ 论断1：「支持退款」论断2：「期限 7 天」</span><br><span class="line">② 对每个论断单独问裁判 LLM：这个论断能否从上下文中推断出来？（是/否）</span><br><span class="line">③ 得分 = 能被支持的论断数 / 论断总数</span><br></pre></td></tr></table></figure>
+
+<p>一句话理解：<strong>答案里有多少比例的话是「有据可查」的。</strong> 1.0 意味着每句话都出自上下文，0.5 意味着有一半论断是编的。</p>
+<h3 id="指标二：Answer-Relevancy（答案相关性）——-有没有答非所问"><a href="#指标二：Answer-Relevancy（答案相关性）——-有没有答非所问" class="headerlink" title="指标二：Answer Relevancy（答案相关性）—— 有没有答非所问"></a>指标二：Answer Relevancy（答案相关性）—— 有没有答非所问</h3><p><strong>衡量的是：回答和问题到底有多相关。</strong> 一个回答可以很「忠实」（每句都有依据），但完全答非所问——比如用户问「退款政策」，系统答了「物流时效」。</p>
+<p>计算原理是反着推：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">① 把答案喂给裁判 LLM，让它反推：这个答案可能在回答什么问题？</span><br><span class="line">   （会生成 N 个候选问题）</span><br><span class="line">② 把 N 个候选问题和用户原始问题分别算 embedding 相似度</span><br><span class="line">③ 取平均 → 得分</span><br></pre></td></tr></table></figure>
+
+<p>一句话理解：<strong>系统说的和用户问的是不是一回事。</strong> 有个常见坑：只问「某产品支不支持 A 功能」，RAG 答了 A 功能的完整介绍但没回答「支不支持」——embedding 相似度可能不低，但答案是无效的。所以这个指标适合粗筛，不适合当唯一标准。</p>
+<h3 id="指标三：Context-Precision（上下文精度）——-召回的排序对不对"><a href="#指标三：Context-Precision（上下文精度）——-召回的排序对不对" class="headerlink" title="指标三：Context Precision（上下文精度）—— 召回的排序对不对"></a>指标三：Context Precision（上下文精度）—— 召回的排序对不对</h3><p><strong>衡量的是：检索结果里，真正相关的 chunk 是不是排在了前面。</strong> RAG 通常把 top-K 全部塞给 LLM，但排在前面（最被重视）的必须是相关的内容；如果相关 chunk 排在末尾、前面全是噪声，LLM 更容易被误导。</p>
+<p>计算原理带位置加权：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">① 对每个位置的 chunk，问裁判 LLM：这个 chunk 和问题 / 标准答案相关吗？</span><br><span class="line">② 从位置 1 开始，逐个位置计算「已见 chunk 中的相关比例」再累加</span><br><span class="line">③ 相关且排在前面的 chunk 贡献大，相关但排在后面的贡献小</span><br></pre></td></tr></table></figure>
+
+<p>**注意：这个指标需要 <code>ground_truth</code>**——因为「这个 chunk 到底相不相关」得有个参照标准。</p>
+<p>一句话理解：<strong>好的检索 &#x3D; 相关的内容排在前面。</strong> 如果你在调 embedding、调重排（Rerank），这个指标就是最直接的效果度量。</p>
+<h3 id="指标四：Context-Recall（上下文召回）——-该找的内容找全没"><a href="#指标四：Context-Recall（上下文召回）——-该找的内容找全没" class="headerlink" title="指标四：Context Recall（上下文召回）—— 该找的内容找全没"></a>指标四：Context Recall（上下文召回）—— 该找的内容找全没</h3><p><strong>衡量的是：标准答案里的信息点，检索结果覆盖了多少。</strong> 排序再好，如果关键信息根本没被召回，LLM 也无米下锅——这就是幻觉治理里说的「检索层没找到，LLM 靠猜」。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">① 把标准答案（ground_truth）拆成若干句子</span><br><span class="line">② 对每个句子问裁判 LLM：这个句子的信息能否从检索上下文中推断出来？</span><br><span class="line">③ 得分 = 能被覆盖的句子数 / 总句数</span><br></pre></td></tr></table></figure>
+
+<p>一句话理解：<strong>知识库里明明有答案，检索器找到没有。</strong> 同样需要 <code>ground_truth</code>。如果你怀疑「问题答不上来是因为检索没召回」，先看这个指标。</p>
+<h3 id="四个指标的分工，画一张图"><a href="#四个指标的分工，画一张图" class="headerlink" title="四个指标的分工，画一张图"></a>四个指标的分工，画一张图</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">                  RAG 评估</span><br><span class="line">                     │</span><br><span class="line">    ┌────────────────┴────────────────┐</span><br><span class="line">    ▼                                 ▼</span><br><span class="line">检索质量（四步里①步）               生成质量（四步里②步）</span><br><span class="line">    │                                 │</span><br><span class="line">    ├─ Context Precision              ├─ Faithfulness</span><br><span class="line">    │    相关 chunk 排序对不对？       │    回答有没有照着上下文说？</span><br><span class="line">    ├─ Context Recall                 └─ Answer Relevancy</span><br><span class="line">    │    该找的内容找全没？               回答有没有答非所问？</span><br><span class="line">    └─ （需要 ground_truth）</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>衡量环节</th>
+<th>需要字段</th>
+<th>高分意味着</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Faithfulness</td>
+<td>生成</td>
+<td>question + answer + contexts</td>
+<td>回答有据可查，不编</td>
+</tr>
+<tr>
+<td>Answer Relevancy</td>
+<td>生成</td>
+<td>question + answer + contexts</td>
+<td>回答切题，不跑偏</td>
+</tr>
+<tr>
+<td>Context Precision</td>
+<td>检索</td>
+<td>+ ground_truth</td>
+<td>相关的排在前面</td>
+</tr>
+<tr>
+<td>Context Recall</td>
+<td>检索</td>
+<td>+ ground_truth</td>
+<td>关键信息都召回了</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="四、扩展指标：按需加装"><a href="#四、扩展指标：按需加装" class="headerlink" title="四、扩展指标：按需加装"></a>四、扩展指标：按需加装</h2><p>四大指标是基本盘，ragas 还提供了一批扩展指标，对应更具体的诉求：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>衡量什么</th>
+<th>什么时候用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Answer Correctness</td>
+<td>回答与标准答案的「事实一致性 + 语义相似度」</td>
+<td>有标准答案，想综合评答案质量</td>
+</tr>
+<tr>
+<td>Context Entity Recall</td>
+<td>上下文覆盖了标准答案里多少「实体」（人名、数字等）</td>
+<td>关注实体级信息是否召回（如医疗、法务）</td>
+</tr>
+<tr>
+<td>Noise Sensitivity</td>
+<td>往上下文里混入无关 chunk 后，答案质量下降多少</td>
+<td>检验系统对噪声的鲁棒性</td>
+</tr>
+<tr>
+<td>Context Utilization</td>
+<td>检索到的上下文里，真正被答案用上的比例</td>
+<td>判断召回是否「多而杂」</td>
+</tr>
+<tr>
+<td>LLM Context Recall</td>
+<td>基于 LLM 判定信息覆盖的召回变体</td>
+<td>标准答案拆句效果不好的时候</td>
+</tr>
+</tbody></table>
+<p>另外还有 <code>AspectCritique</code>——<strong>自定义评估标准</strong>：比如「回答是否包含广告」「语气是否礼貌」，你可以自己定义一条评判标准，让裁判 LLM 按它打分。相当于给评估框架插你自己的维度。</p>
+<blockquote>
+<p>一个朴素的经验：<strong>第一轮评估只用四大指标就够了</strong>，跑出分数、定位到是检索问题还是生成问题，再有针对性地加扩展指标。指标不是越多越好——每个指标都是一次 LLM 调用，是有成本的。</p>
+</blockquote>
+<hr>
+<h2 id="五、接入：三步跑通一次评估"><a href="#五、接入：三步跑通一次评估" class="headerlink" title="五、接入：三步跑通一次评估"></a>五、接入：三步跑通一次评估</h2><p>说了这么多原理，落地只需要三步。</p>
+<h3 id="第一步：安装-配一个「评估用-LLM」"><a href="#第一步：安装-配一个「评估用-LLM」" class="headerlink" title="第一步：安装 + 配一个「评估用 LLM」"></a>第一步：安装 + 配一个「评估用 LLM」</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">pip install ragas</span><br></pre></td></tr></table></figure>
+
+<p>关键认知：<strong>ragas 的裁判是一个独立配置的 LLM，不是你 RAG 应用里那个生成模型。</strong> 基本要求是「裁判要比被评的系统强」——用 7B 小模型去评 GPT 的输出，分数会失真。常见配置是让裁判用 <code>gpt-4o-mini</code> 级别以上的模型：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> langchain_openai <span class="keyword">import</span> ChatOpenAI</span><br><span class="line"><span class="keyword">from</span> ragas.llms <span class="keyword">import</span> LangchainLLMWrapper</span><br><span class="line"></span><br><span class="line"><span class="comment"># 裁判 LLM：评估过程中的提问、判断都靠它</span></span><br><span class="line">evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model=<span class="string">&quot;gpt-4o-mini&quot;</span>))</span><br><span class="line"></span><br><span class="line"><span class="comment"># 部分指标（如 Answer Relevancy）还需要 embedding 计算相似度</span></span><br><span class="line"><span class="keyword">from</span> langchain_openai <span class="keyword">import</span> OpenAIEmbeddings</span><br><span class="line"><span class="keyword">from</span> ragas.embeddings <span class="keyword">import</span> LangchainEmbeddingsWrapper</span><br><span class="line"></span><br><span class="line">evaluator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())</span><br></pre></td></tr></table></figure>
+
+<h3 id="第二步：准备评估数据集"><a href="#第二步：准备评估数据集" class="headerlink" title="第二步：准备评估数据集"></a>第二步：准备评估数据集</h3><p>三种来源，按成本从低到高：</p>
+<p><strong>① 手动构造</strong>：适合起步。几十条就够了，字段就是第二节那张表：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> ragas <span class="keyword">import</span> EvaluationDataset</span><br><span class="line"><span class="keyword">from</span> ragas.dataset_schema <span class="keyword">import</span> SingleTurnSample</span><br><span class="line"></span><br><span class="line">dataset = [</span><br><span class="line">    SingleTurnSample(</span><br><span class="line">        user_input=<span class="string">&quot;退款期限是多久？&quot;</span>,                       <span class="comment"># question</span></span><br><span class="line">        response=<span class="string">&quot;支持 7 天无理由退款。&quot;</span>,                     <span class="comment"># answer</span></span><br><span class="line">        retrieved_contexts=[                                 <span class="comment"># contexts</span></span><br><span class="line">            <span class="string">&quot;本店支持 7 天无理由退款，以签收之日起算。&quot;</span>,</span><br><span class="line">            <span class="string">&quot;发货时效为 48 小时内。&quot;</span>,</span><br><span class="line">        ],</span><br><span class="line">        reference=<span class="string">&quot;7 天无理由退款。&quot;</span>,                        <span class="comment"># ground_truth</span></span><br><span class="line">    ),</span><br><span class="line">    <span class="comment"># ... 再多来几十条</span></span><br><span class="line">]</span><br><span class="line"></span><br><span class="line">eval_dataset = EvaluationDataset(samples=dataset)</span><br></pre></td></tr></table></figure>
+
+<p><strong>② 从你的 RAG 应用采集</strong>：把线上或测试时跑过的真实问题收集起来，<code>question</code> 和 <code>contexts</code> 直接从你的系统日志里拿（检索结果、喂给 LLM 的 chunk），<code>answer</code> 是系统当时的输出，<code>ground_truth</code> 人工标一下。<strong>这是最推荐的来源——测的是真实分布。</strong></p>
+<p><strong>③ TestsetGenerator 合成</strong>：没有现成测试集时，让 ragas 根据你的知识库文档自动生成「问题 + 标准答案」：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> ragas.testset <span class="keyword">import</span> TestsetGenerator</span><br><span class="line"></span><br><span class="line">generator = TestsetGenerator(</span><br><span class="line">    llm=generator_llm,          <span class="comment"># 用来出题的模型</span></span><br><span class="line">    embedding_model=generator_embeddings,</span><br><span class="line">)</span><br><span class="line">testset = generator.generate_with_langchain_docs(docs, testset_size=<span class="number">50</span>)</span><br><span class="line">testset.to_pandas()</span><br></pre></td></tr></table></figure>
+
+<p>它能按比例生成不同类型的题：<code>simple</code>（简单直问）、<code>multi_context</code>（需要跨多段拼接）、<code>reasoning</code>（需要推理）。<strong>注意合成测试集 ≠ 真实分布</strong>，只能作为冷启动，上线前务必用真实数据补一批。</p>
+<h3 id="第三步：跑评估"><a href="#第三步：跑评估" class="headerlink" title="第三步：跑评估"></a>第三步：跑评估</h3><figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> ragas <span class="keyword">import</span> evaluate</span><br><span class="line"><span class="keyword">from</span> ragas.metrics <span class="keyword">import</span> (</span><br><span class="line">    faithfulness,</span><br><span class="line">    answer_relevancy,</span><br><span class="line">    context_precision,</span><br><span class="line">    context_recall,</span><br><span class="line">)</span><br><span class="line"></span><br><span class="line">result = evaluate(</span><br><span class="line">    dataset=eval_dataset,</span><br><span class="line">    metrics=[faithfulness, answer_relevancy, context_precision, context_recall],</span><br><span class="line">    llm=evaluator_llm,</span><br><span class="line">    embeddings=evaluator_embeddings,</span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="comment"># 看分数</span></span><br><span class="line">result.to_pandas()</span><br><span class="line"><span class="comment"># 每个指标一个 0~1 的分数，还有一个全局的 RAGAS 综合分</span></span><br></pre></td></tr></table></figure>
+
+<p>输出示例：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>faithfulness</th>
+<th>answer_relevancy</th>
+<th>context_precision</th>
+<th>context_recall</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>样例1</td>
+<td>1.0</td>
+<td>0.86</td>
+<td>0.72</td>
+<td>0.83</td>
+</tr>
+<tr>
+<td>样例2</td>
+<td>0.50</td>
+<td>0.91</td>
+<td>0.64</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>全局</td>
+<td><strong>0.78</strong></td>
+<td><strong>0.89</strong></td>
+<td><strong>0.68</strong></td>
+<td><strong>0.90</strong></td>
+</tr>
+</tbody></table>
+<p>怎么解读？<strong>别只盯综合分，要看指标之间的「分差」</strong>——分差才是定位问题的地方：</p>
+<ul>
+<li><code>faithfulness</code> 低但 <code>context_recall</code> 高 → <strong>检索没问题，是生成没照着说</strong> → 去调 Prompt 约束（幻觉治理的防线一）</li>
+<li><code>context_recall</code> 低 → <strong>该找的没找到</strong> → 去调 embedding &#x2F; chunk 切分 &#x2F; 召回数（先治检索）</li>
+<li><code>context_precision</code> 低但 <code>context_recall</code> 高 → <strong>找全了但排序乱</strong> → 上 Rerank 重排</li>
+<li><code>answer_relevancy</code> 低 → <strong>答非所问</strong> → 检查问题理解和提示词</li>
+</ul>
+<p>这和前几篇是闭环的：<strong>治理方案告诉你「出了问题怎么改」，评估告诉你「问题到底出在哪」。</strong></p>
+<hr>
+<h2 id="六、更进一步：在线评估与新版写法"><a href="#六、更进一步：在线评估与新版写法" class="headerlink" title="六、更进一步：在线评估与新版写法"></a>六、更进一步：在线评估与新版写法</h2><h3 id="在线评估：把评估挂到线上流量上"><a href="#在线评估：把评估挂到线上流量上" class="headerlink" title="在线评估：把评估挂到线上流量上"></a>在线评估：把评估挂到线上流量上</h3><p>离线评估是拿固定测试集跑一次。想持续监控线上质量，思路是<strong>把每次线上请求的痕迹（question &#x2F; contexts &#x2F; answer）记下来，定时批量跑一轮指标</strong>。现在主流链路是「trace 平台 + ragas」：</p>
+<ul>
+<li><strong>Langfuse &#x2F; LangSmith</strong>：RAG 应用接入后自动记录每次请求的检索结果和回答，ragas 直接消费这些 trace 批量打分，结果回写到平台看趋势</li>
+<li><strong>Arize Phoenix</strong>：基于 OpenTelemetry，评估分数可以作为 span 注解回传，在链路视图里直接看到「哪一次检索拖了后腿」</li>
+</ul>
+<p>在线评估的取舍：不需要 <code>ground_truth</code> 的指标（Faithfulness、Answer Relevancy）可以全量跑；需要标准答案的指标只能抽样子集人工标。</p>
+<h3 id="新版写法：-experiment"><a href="#新版写法：-experiment" class="headerlink" title="新版写法：@experiment"></a>新版写法：@experiment</h3><p>ragas v0.4 起官方推荐用 <code>@experiment</code> 装饰器替代 <code>evaluate()</code>（后者已标记废弃但仍在广泛使用）。好处是把「评估」定义成一个普通函数，对数据集自动迭代、自动落库，便于和实验管理打通：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> ragas <span class="keyword">import</span> experiment</span><br><span class="line"></span><br><span class="line"><span class="meta">@experiment</span></span><br><span class="line"><span class="keyword">async</span> <span class="keyword">def</span> <span class="title function_">my_eval</span>(<span class="params">user_input, response, retrieved_contexts, reference</span>):</span><br><span class="line">    <span class="comment"># 自定义评估逻辑：跑指标、算分</span></span><br><span class="line">    <span class="keyword">return</span> &#123;<span class="string">&quot;faithfulness&quot;</span>: score.faithfulness, ...&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">await</span> my_eval.arun(dataset=eval_dataset)</span><br></pre></td></tr></table></figure>
+
+<p>如果你刚上手，用 <code>evaluate()</code> 完全没问题，先跑通再说。</p>
+<hr>
+<h2 id="七、常见坑"><a href="#七、常见坑" class="headerlink" title="七、常见坑"></a>七、常见坑</h2><p><strong>坑 1：裁判模型太弱。</strong> 用和被评系统同级的模型当裁判，等于「让差生给差生改卷」——Faithfulness 该判「没依据」的判成「有依据」，分数虚高。原则：<strong>裁判 ≥ 被评模型的水平</strong>，必要时抽 20 条人工复核裁判的判分是否合理。</p>
+<p><strong>坑 2：指标和字段不匹配。</strong> 没有 <code>ground_truth</code> 却想算 Context Precision，跑出来的分数毫无意义。先对表：需要标准答案的三个指标（Context Precision &#x2F; Context Recall &#x2F; Answer Correctness）必须有 <code>reference</code> 字段。</p>
+<p><strong>坑 3：测试集太小或太「干净」。</strong> 20 条全是简单直问，分数好看但说明不了问题。至少覆盖：多跳问题、无答案问题（知识库里没有的）、带噪声干扰的问题——<strong>无答案问题尤其重要</strong>，它检验的是「不知道时会不会老老实实说不知道」（幻觉治理的防线二）。</p>
+<p><strong>坑 4：把评估当一次性的。</strong> 改一次配置跑一次，看不出退化。好的做法是固定一组评估集，每次改动（换 embedding、调 Prompt、换模型）都跑一遍，<strong>对比分数变化而不是绝对值</strong>——绝对值受测试集影响很大，同一测试集上的前后对比才有意义。</p>
+<hr>
+<h2 id="八、灵魂总结"><a href="#八、灵魂总结" class="headerlink" title="八、灵魂总结"></a>八、灵魂总结</h2><p>回到开头的问题：前几篇聊的 Query Rewrite、动态更新、幻觉治理，都在「做改进」；但<strong>没有度量，就没有改进</strong>——「检索质量到底怎么样」「防线到底有没有生效」，靠感觉是不行的。</p>
+<p>ragas 给了一套完整答案：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">评估粒度：拆成 检索质量 + 生成质量 两个环节，各自独立打分</span><br><span class="line">四大指标：Faithfulness（有据可查）/ Answer Relevancy（答即所问）</span><br><span class="line">          Context Precision（排序正确）/ Context Recall（召回完整）</span><br><span class="line">接入三步：准备数据（问题/答案/上下文/标准答案）</span><br><span class="line">          → 配裁判 LLM（要比被评系统强）</span><br><span class="line">          → evaluate() 跑分，看「指标分差」定位问题</span><br><span class="line">进阶玩法：TestsetGenerator 合成测试集冷启动</span><br><span class="line">          在线评估挂 trace 平台持续监控</span><br><span class="line">          新版 @experiment 把评估代码化、可追溯</span><br></pre></td></tr></table></figure>
+
+<p>最后记住一条最重要的心法——<strong>别盯综合分，盯分差</strong>：</p>
+<blockquote>
+<p>四个指标不是四个并列的数字，而是一套「定位系统」：<code>faithfulness</code> 低是生成在编，<code>context_recall</code> 低是检索没找到，<code>context_precision</code> 低是排序有问题，<code>answer_relevancy</code> 低是答非所问。<strong>指标之间的相对关系，比任何绝对值都更有信息量。</strong></p>
+</blockquote>
+<p>这和前面几篇是同一个闭环：治幻觉先治检索，治检索先能量化检索。评估不是 RAG 的最后一步，而是<strong>每次迭代的第一步</strong>。</p>
+</div>
+  </article>
+</div>
+
+  </main>
+  <footer class="site-footer">
+  <div class="footer-inner">
+    <div>
+      <strong>YUK1&#39;s 放课后日志</strong>
+      <p>今天也要把喜欢的事情做到最好。</p>
+    </div>
+    <p class="copyright">© 2026 YUK1 · Powered by Hexo</p>
+  </div>
+</footer>
+
+
+  
+<script src="/js/theme.js"></script>
+
+</body>
+</html>
+
